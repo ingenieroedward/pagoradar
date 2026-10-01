@@ -1,3 +1,13 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+
+/** Changes whenever the stylesheet or script does, so a deploy never pairs new pages with a cached old file. */
+const ASSET_V = createHash("sha256")
+  .update(readFileSync(new URL("../../public/admin.css", import.meta.url)))
+  .update(readFileSync(new URL("../../public/admin.js", import.meta.url)))
+  .digest("hex")
+  .slice(0, 10);
+
 /**
  * HTML for the admin panel, rendered on the server. `html` is a tagged template that escapes every
  * interpolated value unless it is itself `html` output (or `raw()`), so user data can never inject markup.
@@ -104,6 +114,8 @@ const ICON_PATHS = {
   week: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
   alert: '<path d="M12 3 2 20h20z"/><path d="M12 10v4M12 17h.01"/>',
   upload: '<path d="M12 16V4M7 9l5-5 5 5M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>',
+  download: '<path d="M12 4v12M7 11l5 5 5-5M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
 };
 export const icon = (name, cls = "ico") =>
   raw(`<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name] ?? ""}</svg>`);
@@ -135,8 +147,8 @@ export function layout({ title, admin = null, csrf = null, active = null, body }
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#0a1013">
 <title>${title} · pagoradar</title>
-<link rel="stylesheet" href="/static/admin.css">
-<script src="/static/admin.js" defer></script>
+<link rel="stylesheet" href="/static/admin.css?v=${ASSET_V}">
+<script src="/static/admin.js?v=${ASSET_V}" defer></script>
 </head>`;
   if (!admin) {
     return `<!doctype html>${html`<html lang="es">

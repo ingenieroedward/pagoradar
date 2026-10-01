@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { expireCharges } from "./charges.js";
 import { deliverDue } from "./webhooks.js";
@@ -9,6 +10,7 @@ const STATIC = {
   "/static/checkout.js": { type: "text/javascript; charset=utf-8", file: new URL("../public/checkout.js", import.meta.url) },
 };
 const cache = new Map();
+const ASSET_V = createHash("sha256").update(readFileSync(STATIC["/static/checkout.css"].file)).update(readFileSync(STATIC["/static/checkout.js"].file)).digest("hex").slice(0, 10);
 const pageLimit = rateLimiter(120, 60_000);
 const ID_RE = /^\/c\/(chg_[a-z0-9]{8,40})(\/status)?$/;
 
@@ -23,8 +25,8 @@ function shell(title, body) {
 <meta name="robots" content="noindex, nofollow">
 <meta name="referrer" content="no-referrer">
 <title>${title}</title>
-<link rel="stylesheet" href="/static/checkout.css">
-<script src="/static/checkout.js" defer></script>
+<link rel="stylesheet" href="/static/checkout.css?v=${ASSET_V}">
+<script src="/static/checkout.js?v=${ASSET_V}" defer></script>
 </head>
 <body>
 <main class="pay">${body}</main>

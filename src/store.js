@@ -408,8 +408,10 @@ export function openStore(path, { masterKey } = {}) {
       if (from) where.push("paid_at >= ?"), args.push(from);
       if (to) where.push("paid_at < ?"), args.push(to);
       const sql = `FROM payments ${where.length ? `WHERE ${where.join(" AND ")}` : ""}`;
+      const sum = one(`SELECT COUNT(*) AS n, COALESCE(SUM(amount_cents), 0) AS cents ${sql}`, ...args);
       return {
-        total: one(`SELECT COUNT(*) AS n ${sql}`, ...args).n,
+        total: sum.n,
+        cents: sum.cents,
         rows: all(`SELECT * ${sql} ORDER BY paid_at DESC LIMIT ? OFFSET ?`, ...args, limit, offset).map(toPayment),
       };
     },
@@ -440,7 +442,25 @@ export function openStore(path, { masterKey } = {}) {
       paidAt: r.paid_at,
       canceledAt: r.canceled_at,
     };
+  const chargeWhere = ({ appId, accountId, status, reference, tenantRef, q }) => {
+    const where = [];
+    const args = [];
+    if (appId) where.push("c.app_id = ?"), args.push(appId);
+    if (accountId) where.push("c.account_id = ?"), args.push(accountId);
+    if (status) where.push("c.status = ?"), args.push(status);
+    if (reference) where.push("c.reference = ?"), args.push(reference);
+    if (tenantRef) where.push("a.tenant_ref = ?"), args.push(tenantRef);
+    if (q) where.push("(c.description LIKE ? OR c.reference LIKE ? OR c.payer_name LIKE ?)"), args.push(`%${q}%`, `%${q}%`, `%${q}%`);
+    return { sql: `FROM charges c LEFT JOIN accounts a ON a.id = c.account_id ${where.length ? `WHERE ${where.join(" AND ")}` : ""}`, args };
+  };
   const charges = {
+    /** How many charges in each status, with the other filters applied. */
+    countByStatus(filters = {}) {
+      const { sql, args } = chargeWhere({ ...filters, status: undefined });
+      const out = { pending: 0, paid: 0, expired: 0, canceled: 0 };
+      for (const r of all(`SELECT c.status AS status, COUNT(*) AS n ${sql} GROUP BY c.status`, ...args)) out[r.status] = r.n;
+      return out;
+    },
     get: (id) => toCharge(one("SELECT * FROM charges WHERE id = ?", id)),
     byReference: (appId, reference) => toCharge(one("SELECT * FROM charges WHERE app_id = ? AND reference = ?", appId, reference)),
     byPayment: (paymentId) => toCharge(one("SELECT * FROM charges WHERE payment_id = ?", paymentId)),
@@ -523,15 +543,8 @@ export function openStore(path, { masterKey } = {}) {
       for (const r of due) run("UPDATE charges SET status = 'expired' WHERE id = ? AND status = 'pending'", r.id);
       return due.map((r) => ({ ...toCharge(r), status: "expired" }));
     },
-    search({ appId, accountId, status, reference, tenantRef, limit = 50, offset = 0 } = {}) {
-      const where = [];
-      const args = [];
-      if (appId) where.push("c.app_id = ?"), args.push(appId);
-      if (accountId) where.push("c.account_id = ?"), args.push(accountId);
-      if (status) where.push("c.status = ?"), args.push(status);
-      if (reference) where.push("c.reference = ?"), args.push(reference);
-      if (tenantRef) where.push("a.tenant_ref = ?"), args.push(tenantRef);
-      const sql = `FROM charges c LEFT JOIN accounts a ON a.id = c.account_id ${where.length ? `WHERE ${where.join(" AND ")}` : ""}`;
+    search({ appId, accountId, status, reference, tenantRef, q, limit = 50, offset = 0 } = {}) {
+      const { sql, args } = chargeWhere({ appId, accountId, status, reference, tenantRef, q });
       return {
         total: one(`SELECT COUNT(*) AS n ${sql}`, ...args).n,
         rows: all(`SELECT c.* ${sql} ORDER BY c.created_at DESC LIMIT ? OFFSET ?`, ...args, Math.min(Math.max(1, limit), 500), offset).map(toCharge),
