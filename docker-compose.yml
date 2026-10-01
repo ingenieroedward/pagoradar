@@ -19,4 +19,6 @@ services:
       - "3000"
 
 volumes:
+  # Nombre fijo: el mismo volumen aunque Dokploy cambie el nombre del proyecto al redesplegar.
   pagoradar-data:
+    name: pagoradar-data

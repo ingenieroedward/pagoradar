@@ -74,6 +74,24 @@ Montos en cualquier formato (`$ 100`, `100.000`, `$4,000.00`); fechas en hora de
    Authenticator, Microsoft Authenticator, 1Password o similar.
 5. Respaldo del volumen `pagoradar-data` (como las otras apps) y un monitor de UptimeRobot a `/health`.
 
+### Datos y volumen
+
+Todo (administradores, apps, cuentas, pagos) vive en `/app/data/pagoradar.db`, en el volumen Docker
+llamado exactamente **`pagoradar-data`** (nombre fijo en `docker-compose.yml`, así redesplegar o
+cambiar el nombre del proyecto en Dokploy no crea uno nuevo). Si al arrancar el log dice
+`AVISO: base de datos nueva` y ya tenías datos, o el panel vuelve a pedir el primer administrador,
+**no lo crees todavía**: tus datos están en otro volumen. Para recuperarlos, en la terminal del servidor:
+
+```sh
+# 1. Ver qué volumen tiene los datos (el que tenga pagoradar.db más grande / más antiguo)
+for v in $(docker volume ls -q | grep -i pagoradar); do echo "== $v"; docker run --rm -v "$v":/d alpine ls -la /d; done
+# 2. Detén pagoradar en Dokploy (Stop) y copia ese volumen al de nombre fijo
+docker run --rm -v VOLUMEN_VIEJO:/from -v pagoradar-data:/to alpine sh -c 'rm -f /to/pagoradar.db*; cp -a /from/. /to/'
+# 3. Deploy de nuevo: el log ya no dice "No hay administrador"
+```
+
+Los volúmenes viejos se pueden borrar (`docker volume rm …`) cuando confirmes que todo está bien.
+
 ### Actualizar desde la primera versión (`PAGORADAR_SOURCES`)
 
 Agrega `MASTER_KEY`, `PUBLIC_URL` e `INBOUND_DOMAIN` y redespliega **sin quitar**

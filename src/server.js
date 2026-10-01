@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { loadConfig } from "./config.js";
 import { openStore } from "./store.js";
@@ -7,8 +8,12 @@ import { importLegacySources } from "./importLegacy.js";
 import { randomToken } from "./security.js";
 
 const config = loadConfig();
-const store = openStore(config.dbPath, { masterKey: config.masterKey });
 const log = (msg) => console.log(`${new Date().toISOString()} ${msg}`);
+const newDatabase = config.dbPath !== ":memory:" && !existsSync(config.dbPath);
+const store = openStore(config.dbPath, { masterKey: config.masterKey });
+// A fresh database on a server that already had one means the data volume wasn't mounted (or changed):
+// say so loudly before anyone recreates the admin over it.
+if (newDatabase) log(`AVISO: base de datos nueva en ${config.dbPath}. Si pagoradar ya tenía datos, el volumen no es el de antes (ver README → "Datos y volumen").`);
 
 importLegacySources(store, config.legacySources, log);
 if (config.inboundDomain && !store.settings.get("inbound_domain")) store.settings.set("inbound_domain", config.inboundDomain);
