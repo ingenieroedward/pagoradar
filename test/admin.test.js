@@ -280,6 +280,23 @@ test("charges: pay key on the account, list, cancel", async () => {
   assert.equal(r.location, "/charges?ok=canceled");
   assert.equal(store.charges.get(c.id).status, "canceled");
   assert.match((await b.req("/charges?status=canceled")).text, /Cancelado/);
+
+  // A payment that came with another amount: "Asociar a un cobro" from Pagos.
+  const open = store.charges.create({ appId: app.id, accountId: acc.id, baseCents: 2_000_000, amountCents: 2_000_300, description: "Pedido 9", expiresAt: new Date(Date.now() + 600_000).toISOString() });
+  const p = store.payments.add(app.id, acc.id, { bank: "nequi", method: "breb", methodText: null, amountCents: 1_999_000, currency: "COP", payerName: "Luis Prueba", payerNameNormalized: "LUIS PRUEBA", payerBank: null, reference: null, transactionId: null, accountHint: null, paidAt: new Date().toISOString(), dkimDomain: "nequi.com.co", dedupeKey: "link-1" });
+  r = await b.req("/payments");
+  assert.match(r.text, new RegExp(`/payments/${p.id}/link`));
+  r = await b.req(`/payments/${p.id}/link`);
+  assert.match(r.text, /Pedido 9/);
+  r = await b.req(`/payments/${p.id}/link`, { method: "POST", form: { _csrf: b.csrf(), chargeId: open.id } });
+  assert.equal(r.location, "/payments?ok=linked");
+  const done = store.charges.get(open.id);
+  assert.equal(done.status, "paid");
+  assert.equal(done.match, "manual");
+  assert.equal(done.paidAmount, 19990);
+  r = await b.req("/payments?ok=linked");
+  assert.match(r.text, /Pagó un cobro/);
+  assert.match(r.text, /asociado a mano/);
 });
 
 test("logout ends the session; security headers on pages; foreign origin refused", async () => {

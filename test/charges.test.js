@@ -207,6 +207,47 @@ test("expiry: charge.expired, the amount stays reserved a while, and a late noti
   assert.equal((await pr.charges.get(c.id)).status, "paid");
 });
 
+test("paying the round amount instead of the unique one: taken when only one charge asked for it", async () => {
+  const c = await pr.charges.create({ account: account.id, amount: 60000, reference: "order-round" });
+  assert.equal(c.amount, 60001);
+  await pay(60000);
+  assert.ok(await waitFor(() => events("charge.paid").some((e) => e.data.id === c.id)));
+  const ev = events("charge.paid").find((e) => e.data.id === c.id);
+  assert.equal(ev.data.match, "approximate");
+  assert.equal(ev.data.paidAmount, 60000);
+  assert.equal(events("payment.received").find((e) => e.data.amount === 60000).data.charge.id, c.id);
+  const got = await pr.charges.get(c.id);
+  assert.equal(got.status, "paid");
+  assert.equal(got.match, "approximate");
+  assert.match(await (await fetch(`${base}/c/${c.id}`)).text(), /valor distinto/);
+  const exactOne = events("charge.paid").find((e) => e.data.reference === "order-2");
+  assert.equal(exactOne.data.match, "exact");
+});
+
+test("round amount with several charges asking it: the expected payer decides, otherwise nobody", async () => {
+  const a = await pr.charges.create({ account: account.id, amount: 70000 });
+  const b = await pr.charges.create({ account: account.id, amount: 70000, payerName: "Ana Prueba" });
+  await pay(70000, { payer: "ANA MARIA PRUEBA LOPEZ" });
+  assert.ok(await waitFor(() => events("charge.paid").some((e) => e.data.id === b.id)));
+  assert.equal((await pr.charges.get(a.id)).status, "pending");
+
+  const x = await pr.charges.create({ account: account.id, amount: 80000 });
+  const y = await pr.charges.create({ account: account.id, amount: 80000 });
+  const before = events("charge.paid").length;
+  await pay(80000, { payer: "PEDRO PRUEBA" });
+  assert.ok(await waitFor(() => events("payment.received").some((e) => e.data.amount === 80000)));
+  assert.equal(events("payment.received").find((e) => e.data.amount === 80000).data.charge, null);
+  assert.equal(events("charge.paid").length, before, "ambiguous: left for a person");
+  assert.equal((await pr.charges.get(x.id)).status, "pending");
+  assert.equal((await pr.charges.get(y.id)).status, "pending");
+  // …who links it by hand.
+  const round = events("payment.received").find((e) => e.data.amount === 80000).data;
+  const linked = await pr.charges.pay(y.id, round.id);
+  assert.equal(linked.match, "manual");
+  assert.equal(linked.paidAmount, 80000);
+  for (const id of [a.id, x.id]) await pr.charges.cancel(id);
+});
+
 test("a payment can be linked by hand", async () => {
   const c = await pr.charges.create({ account: account.id, amount: 30000, reference: "order-manual" });
   const round = events("payment.received").find((e) => e.data.amount === 30000).data;

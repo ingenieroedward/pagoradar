@@ -34,6 +34,9 @@ export function chargeDTO(c, account, publicUrl) {
     checkoutUrl: `${publicUrl ?? ""}/c/${c.id}`,
     returnUrl: c.returnUrl,
     paymentId: c.paymentId,
+    /** How it got paid: "exact", "approximate" (the customer paid the asked amount, not the unique one) or "manual". */
+    match: c.match,
+    paidAmount: c.paidAmount,
     createdAt: c.createdAt,
     expiresAt: c.expiresAt,
     paidAt: c.paidAt,
@@ -68,29 +71,45 @@ function chargeEvent(type, app, charge, account, publicUrl, extra = {}) {
   return makeEvent(type, app.id, { ...chargeDTO(charge, account, publicUrl), ...extra }, `evt_${type.replace(".", "_")}_${charge.id.replace(/^chg_/, "")}`);
 }
 
+/** One charge out of several: the only one, or the only one whose expected payer is who paid. */
+function pickOne(candidates, payment) {
+  if (candidates.length === 1) return candidates[0];
+  const byName = candidates.filter((c) => c.payerName && namesMatch(c.payerName, payment.payerName));
+  return byName.length === 1 ? byName[0] : null;
+}
+
 /**
- * A payment just arrived in `account`: settles the charge it pays, if any. One open charge with that exact
- * amount → that one; several (only possible with uniqueAmount "off") → the one whose expected payer matches.
+ * A payment just arrived in `account`: settles the charge it pays, if any.
+ *  1. exact: open charges with that unique amount (several only with uniqueAmount "off": the expected payer decides);
+ *  2. approximate: none, but the customer paid the round amount asked for (25.000 instead of 25.001) — taken only
+ *     when a single open charge asked that amount (or a single one expects this payer). Otherwise it waits for a person.
  * Returns { charge, event } — the charge.paid event for the caller to queue after payment.received — or null.
  */
 export function matchPayment(store, app, account, payment, { publicUrl } = {}) {
-  const candidates = store.charges.candidates(account.id, payment.amountCents, payment.paidAt ?? payment.receivedAt, MATCH_SLACK_MS);
-  let pick = candidates.length === 1 ? candidates[0] : null;
-  if (candidates.length > 1) {
-    const byName = candidates.filter((c) => c.payerName && namesMatch(c.payerName, payment.payerName));
-    pick = byName.length === 1 ? byName[0] : null;
+  const at = payment.paidAt ?? payment.receivedAt;
+  let match = "exact";
+  let pick = null;
+  const exact = store.charges.candidates(account.id, payment.amountCents, at, MATCH_SLACK_MS);
+  if (exact.length) pick = pickOne(exact, payment);
+  else {
+    // Charges with uniqueAmount "off" were already looked at above (their amount is the base).
+    const byBase = store.charges.candidates(account.id, payment.amountCents, at, MATCH_SLACK_MS, "base_cents").filter((c) => c.amountCents !== c.baseAmount * 100);
+    if (byBase.length) {
+      pick = pickOne(byBase, payment);
+      match = "approximate";
+    }
   }
-  if (!pick || !store.charges.markPaid(pick.id, payment.id)) return null;
+  if (!pick || !store.charges.markPaid(pick.id, payment, match)) return null;
   const charge = store.charges.get(pick.id);
   return { charge, event: chargeEvent("charge.paid", app, charge, account, publicUrl, { payment, late: pick.status === "expired" }) };
 }
 
-/** The app links a payment to a charge by hand (one the automatic match couldn't decide). */
+/** A person (the app by API, or an admin in the panel) links a payment to a charge the automatic match couldn't decide. */
 export function payManually(store, app, charge, payment, { publicUrl } = {}) {
-  if (!store.charges.markPaid(charge.id, payment.id)) return null;
+  if (!store.charges.markPaid(charge.id, payment, "manual")) return null;
   const paid = store.charges.get(charge.id);
   const account = store.accounts.get(charge.accountId);
-  queueEvent(store, app, chargeEvent("charge.paid", app, paid, account, publicUrl, { payment, late: charge.status === "expired", manual: true }));
+  queueEvent(store, app, chargeEvent("charge.paid", app, paid, account, publicUrl, { payment, late: charge.status !== "pending", manual: true }));
   return paid;
 }
 

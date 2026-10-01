@@ -161,6 +161,13 @@ CREATE INDEX charges_due ON charges (status, expires_at);
 CREATE UNIQUE INDEX charges_app_reference ON charges (app_id, reference) WHERE reference IS NOT NULL;
 `;
 
+// v4: how a charge got paid (exact amount, the round amount, or by hand) and what the payment brought.
+const V4 = `
+ALTER TABLE charges ADD COLUMN match_type TEXT;
+ALTER TABLE charges ADD COLUMN paid_amount_cents INTEGER;
+CREATE INDEX charges_open_base ON charges (account_id, status, base_cents);
+`;
+
 export const newId = (prefix) => `${prefix}_${Date.now().toString(36)}${randomBytes(8).toString("hex")}`;
 const now = () => new Date().toISOString();
 const json = (v, fallback) => {
@@ -178,7 +185,7 @@ export function openStore(path, { masterKey } = {}) {
   db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
   db.exec(V1);
   const version = db.prepare("PRAGMA user_version").get().user_version;
-  for (const [v, sql] of [[2, V2], [3, V3]]) {
+  for (const [v, sql] of [[2, V2], [3, V3], [4, V4]]) {
     if (version >= v) continue;
     db.exec("BEGIN");
     try {
@@ -426,6 +433,8 @@ export function openStore(path, { masterKey } = {}) {
       returnUrl: r.return_url,
       status: r.status,
       paymentId: r.payment_id,
+      match: r.match_type,
+      paidAmount: r.paid_amount_cents == null ? null : r.paid_amount_cents / 100,
       createdAt: r.created_at,
       expiresAt: r.expires_at,
       paidAt: r.paid_at,
@@ -467,20 +476,44 @@ export function openStore(path, { masterKey } = {}) {
       return charges.get(id);
     },
     /** Charges of an account that a payment of `amountCents` made at `paidAt` could be paying (open, or expired just before it). */
-    candidates: (accountId, amountCents, paidAt, slackMs) => {
+    candidates: (accountId, amountCents, paidAt, slackMs, column = "amount_cents") => {
       const t = new Date(paidAt).getTime();
       return all(
-        "SELECT * FROM charges WHERE account_id = ? AND amount_cents = ? AND status IN ('pending','expired') AND created_at <= ? AND expires_at >= ? ORDER BY created_at",
+        `SELECT * FROM charges WHERE account_id = ? AND ${column === "base_cents" ? "base_cents" : "amount_cents"} = ? AND status IN ('pending','expired') AND created_at <= ? AND expires_at >= ? ORDER BY created_at`,
         accountId,
         amountCents,
         new Date(t + slackMs).toISOString(),
         new Date(t - slackMs).toISOString(),
       ).map(toCharge);
     },
-    /** Links the payment; false when the charge was already settled or the payment already pays another charge. */
-    markPaid(id, paymentId, at = now()) {
+    /** Charges of an account a payment could be linked to by hand: open, or expired/canceled in the last `days`, closest amount first. */
+    linkable: (accountId, amountCents, days = 7, limit = 20) =>
+      all(
+        "SELECT * FROM charges WHERE account_id = ? AND (status = 'pending' OR (status IN ('expired','canceled') AND created_at > ?)) ORDER BY ABS(amount_cents - ?), created_at DESC LIMIT ?",
+        accountId,
+        new Date(Date.now() - days * 86400_000).toISOString(),
+        amountCents,
+        limit,
+      ).map(toCharge),
+    countLinkable: (accountId, days = 7) =>
+      one("SELECT COUNT(*) AS n FROM charges WHERE account_id = ? AND (status = 'pending' OR (status IN ('expired','canceled') AND created_at > ?))", accountId, new Date(Date.now() - days * 86400_000).toISOString()).n,
+    /**
+     * Links the payment; false when the charge was already settled or the payment already pays another charge.
+     * `match`: "exact", "approximate" (paid the round amount) or "manual". A canceled charge only by hand.
+     */
+    markPaid(id, payment, match = "exact", at = now()) {
+      const states = match === "manual" ? "('pending','expired','canceled')" : "('pending','expired')";
       try {
-        return run("UPDATE charges SET status = 'paid', payment_id = ?, paid_at = ? WHERE id = ? AND status IN ('pending','expired')", paymentId, at, id).changes === 1;
+        return (
+          run(
+            `UPDATE charges SET status = 'paid', payment_id = ?, paid_at = ?, match_type = ?, paid_amount_cents = ?, canceled_at = NULL WHERE id = ? AND status IN ${states}`,
+            payment.id,
+            at,
+            match,
+            payment.amountCents,
+            id,
+          ).changes === 1
+        );
       } catch {
         return false; // payment_id is UNIQUE
       }

@@ -224,7 +224,7 @@ export async function handleApi(req, res, url, ctx) {
       if (payment.accountId !== charge.accountId) return done(409, { error: "El pago llegó a otra cuenta receptora" });
       if (store.charges.byPayment(payment.id)) return done(409, { error: "Ese pago ya está asociado a otro cobro" });
       const paid = payManually(store, app, charge, payment, { publicUrl });
-      if (!paid) return done(409, { error: `No se puede marcar pagado un cobro ${charge.status}` });
+      if (!paid) return done(409, { error: "Ese cobro ya está pagado" });
       audit("Asoció un pago a un cobro", charge.id, payment.id);
       void deliverDue(store, { log }).catch(() => {});
       return done(200, dto(paid));

@@ -37,7 +37,8 @@ function statusBlock(charge, remainingSec) {
     return html`<section class="state state-ok" aria-live="polite">
       <div class="check" aria-hidden="true"></div>
       <h2>¡Pago recibido!</h2>
-      <p>Tu banco confirmó el pago de <b>${fmtMoney(charge.amount)}</b>. Ya puedes cerrar esta página.</p>
+      <p>Tu banco confirmó el pago de <b>${fmtMoney(charge.paidAmount ?? charge.amount)}</b>. Ya puedes cerrar esta página.</p>
+      ${charge.paidAmount != null && charge.paidAmount !== charge.amount ? html`<p class="muted small">Pagaste un valor distinto al indicado, pero ya quedó asociado a este cobro.</p>` : ""}
       ${charge.returnUrl ? html`<a class="btn" href="${charge.returnUrl}" data-return>Volver al comercio</a>` : ""}
     </section>`;
   }
