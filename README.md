@@ -197,9 +197,30 @@ export function verifyPagoradar(secret, header, rawBody, toleranceSec = 300) {
 
 Usa el **cuerpo crudo** (antes de `JSON.parse`).
 
+### Cuentas receptoras por API (para tus clientes)
+
+Si tu app es un SaaS (por ejemplo, cada organizador de Ibirifas cobra con su propia cuenta), tu app
+crea la cuenta receptora de cada cliente y le muestra las instrucciones; el cliente nunca entra a
+pagoradar. Todas con `Authorization: Bearer <API key de la app>`:
+
+| | |
+|---|---|
+| `POST /v1/accounts` | `{ "name": "Tienda de Ana", "ownerEmails": ["ana@gmail.com"], "banks": ["nequi_negocios"], "tenantRef": "org_42" }` → `201` con la cuenta |
+| `GET /v1/accounts?tenantRef=org_42` | Las cuentas de la app (o de un cliente) |
+| `GET /v1/accounts/<id>` | Una cuenta: `status` (`pending` → `active`, o `disabled`), `confirmationCode` / `confirmationLink` de Gmail, `lastPaymentAt`… |
+| `PATCH /v1/accounts/<id>` | Cambiar `name`, `ownerEmails`, `banks`, `tenantRef` o `active` |
+| `DELETE /v1/accounts/<id>` | La elimina; si ya tiene pagos, solo la desactiva |
+
+La cuenta trae `address` y `setup` (`forwardTo` y `gmailFilterFrom`, el texto para el filtro de
+Gmail): con eso tu app arma la guía para su cliente. Los eventos `account.confirmation_code` y
+`account.activated` te avisan cuándo mostrar el código y cuándo quedó lista. `banks` es opcional
+(todos por defecto); `tenantRef` llega en cada pago (`data.account.tenantRef`) para saber de qué
+cliente es. Una app solo ve sus propias cuentas.
+
 ### API de respaldo
 
-Por si un webhook se perdió: `GET /v1/payments?since=<ISO>&limit=100` con
+Por si un webhook se perdió: `GET /v1/payments?since=<ISO>&limit=100` (opcional `&account=<id>` o
+`&tenantRef=<id>`) con
 `Authorization: Bearer <API key de la app>` → `{ "payments": [...], "next": "<receivedAt del último>" }`,
 en orden de llegada. Pide de nuevo con `since=next` hasta que venga vacío.
 

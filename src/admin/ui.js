@@ -38,11 +38,6 @@ const dt = new Intl.DateTimeFormat("es-CO", { day: "numeric", month: "short", ho
 export const fmtDate = (iso) => (iso ? dt.format(new Date(iso)) : "—");
 
 export const BANK_LABEL = { nequi_negocios: "Nequi Negocios", nequi: "Nequi", bancolombia: "Bancolombia" };
-export const BANK_SENDERS = {
-  nequi_negocios: "notificaciones@nequi.com.co",
-  nequi: "notificaciones@nequi.com.co",
-  bancolombia: "alertasynotificaciones@an.notificacionesbancolombia.com",
-};
 export const REASON_LABEL = {
   dkim_failed: "Sin firma válida del banco (posible correo falso)",
   weak_signature: "Firma del banco incompleta",
