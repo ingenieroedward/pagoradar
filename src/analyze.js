@@ -30,7 +30,12 @@ export async function analyzeEmail(raw, { ownerEmails = [], banks = BANK_IDS, re
   const base = { from, subject, text, messageId: mail.messageId ?? null };
 
   if (from === "forwarding-noreply@google.com") {
-    const code = text.match(/(?:c[óo]digo de confirmaci[óo]n|confirmation code)\s*:?\s*(\d{6,12})/i)?.[1] ?? null;
+    // The code is in the subject, "(#123456789) Confirmación de reenvío de Gmail…", and somewhere in the text.
+    const code =
+      subject.match(/#\s?(\d{6,12})/)?.[1] ??
+      text.match(/(?:c[óo]digo|code)[^0-9]{0,60}(\d{6,12})/i)?.[1] ??
+      text.match(/\b(\d{9})\b/)?.[1] ??
+      null;
     return { ok: false, reason: "gmail_forwarding_confirmation", code, ...base };
   }
 

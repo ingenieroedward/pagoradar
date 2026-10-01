@@ -93,6 +93,9 @@ test("Gmail forwarding confirmation: the code is read", async () => {
   const r = await analyzeEmail(raw, opts);
   assert.equal(r.reason, "gmail_forwarding_confirmation");
   assert.equal(r.code, "123456789");
+  // Code only in the subject, body worded differently.
+  const other = Buffer.from(buildEmail({ from: "forwarding-noreply@google.com", subject: "(#555666777) Confirmación de reenvío de Gmail: recibir correo de x@gmail.com", text: "Para confirmar esta solicitud, haz clic en el siguiente vínculo." }));
+  assert.equal((await analyzeEmail(other, opts)).code, "555666777");
 });
 
 test("garbage doesn't throw", async () => {
