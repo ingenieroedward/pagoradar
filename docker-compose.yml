@@ -1,0 +1,18 @@
+# Dokploy: crea una app "Docker Compose" apuntando a este repo, agrega el dominio hacia el
+# servicio "pagoradar", puerto 3000, y pon las variables en Environment (ver .env.example).
+services:
+  pagoradar:
+    build: .
+    restart: unless-stopped
+    environment:
+      INGEST_SECRET: ${INGEST_SECRET}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      PAGORADAR_SOURCES: ${PAGORADAR_SOURCES}
+      RETENTION_DAYS: ${RETENTION_DAYS:-180}
+    volumes:
+      - pagoradar-data:/app/data
+    expose:
+      - "3000"
+
+volumes:
+  pagoradar-data:
