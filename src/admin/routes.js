@@ -12,6 +12,7 @@ import {
   REASON_LABEL,
   accountStatus,
   badge,
+  icon,
   chargeStatus,
   copyable,
   csrfField,
@@ -402,10 +403,10 @@ function dashboard(s) {
       ${!domain ? flash("Falta el dominio de recepción: configúralo en Ajustes antes de crear cuentas.", "warn") : ""}
       ${failed ? flash(html`Hay ${failed} entregas de webhook fallidas. <a href="/apps">Revisa tus apps</a>.`, "bad") : ""}
       <div class="grid">
-        <div class="stat"><b>${fmtMoney(today.cents / 100)}</b><span>Hoy · ${today.n} pagos</span></div>
-        <div class="stat"><b>${fmtMoney(week.cents / 100)}</b><span>Últimos 7 días · ${week.n} pagos</span></div>
-        <div class="stat"><b>${accounts.length}</b><span>Cuentas receptoras${pending.length ? ` · ${pending.length} esperando` : ""}</span></div>
-        <div class="stat"><b>${rejected}</b><span><a href="/inbox">Correos rechazados (7 días)</a></span></div>
+        <div class="stat stat-hero"><span class="stat-ico">${icon("today")}</span><span class="stat-label">Hoy</span><b>${fmtMoney(today.cents / 100)}</b><span class="stat-sub">${today.n} ${today.n === 1 ? "pago" : "pagos"}</span></div>
+        <div class="stat"><span class="stat-ico">${icon("week")}</span><span class="stat-label">Últimos 7 días</span><b>${fmtMoney(week.cents / 100)}</b><span class="stat-sub">${week.n} ${week.n === 1 ? "pago" : "pagos"}</span></div>
+        <a class="stat" href="/accounts"><span class="stat-ico">${icon("accounts")}</span><span class="stat-label">Cuentas receptoras</span><b>${accounts.length}</b><span class="stat-sub">${pending.length ? `${pending.length} esperando configuración` : "todas listas"}</span></a>
+        <a class="stat${rejected ? " stat-warn" : ""}" href="/inbox"><span class="stat-ico">${icon("inbox")}</span><span class="stat-label">Correos rechazados</span><b>${rejected}</b><span class="stat-sub">últimos 7 días</span></a>
       </div>
       <div class="card">
         <div class="head"><h2>Últimos pagos</h2><a href="/payments">Ver todos</a></div>
@@ -421,13 +422,13 @@ function paymentsTable(rows, appName, store) {
     <thead><tr><th>Fecha</th><th>Pagador</th><th>Banco</th><th>Cuenta</th><th>App</th><th>Cobro</th><th class="num">Valor</th></tr></thead>
     <tbody>${rows.map(
       (p) => html`<tr>
-        <td>${fmtDate(p.paidAt)}</td>
-        <td>${p.payerName}${p.payerBank ? html`<div class="muted small">desde ${p.payerBank}</div>` : ""}</td>
+        <td class="t-date">${fmtDate(p.paidAt)}</td>
+        <td class="t-main"><b>${p.payerName}</b>${p.payerBank ? html`<div class="muted small">desde ${p.payerBank}</div>` : ""}</td>
         <td>${BANK_LABEL[p.bank] ?? p.bank}${p.reference ? html`<div class="muted small">Ref. ${p.reference}</div>` : ""}</td>
-        <td>${p.accountId ? html`<a href="/accounts/${p.accountId}">${accountName[p.accountId] ?? p.accountId}</a>` : "—"}</td>
+        <td>${p.accountId ? html`<a class="quiet" href="/accounts/${p.accountId}">${accountName[p.accountId] ?? p.accountId}</a>` : "—"}</td>
         <td>${appName[p.appId] ?? p.appId}</td>
-        <td>${chargeCell(p, store)}</td>
-        <td class="num">${fmtMoney(p.amount)}</td>
+        <td class="t-wide">${chargeCell(p, store)}</td>
+        <td class="num"><b>${fmtMoney(p.amount)}</b></td>
       </tr>`,
     )}</tbody></table></div>`;
 }
@@ -439,8 +440,12 @@ function chargeCell(p, store) {
   if (c) {
     return html`${badge("Pagó un cobro", "ok")}<div class="muted small">${c.description ?? c.reference ?? c.id}${c.match ? ` · ${MATCH_LABEL[c.match] ?? c.match}` : ""}</div>`;
   }
-  if (p.accountId && store.charges.countLinkable(p.accountId) > 0) return html`<a href="/payments/${p.id}/link">Asociar a un cobro</a>`;
-  return "—";
+  // Only offer it when an open or recent charge of that account asked for about that much (±10%, at least $2.000).
+  const closest = p.accountId ? store.charges.linkable(p.accountId, p.amountCents, 7, 1)[0] : null;
+  if (closest && Math.abs(closest.amountCents - p.amountCents) <= Math.max(p.amountCents * 0.1, 200_000)) {
+    return html`<a class="chip" href="/payments/${p.id}/link">Asociar a un cobro</a>`;
+  }
+  return "";
 }
 
 function linkPaymentPage(s, id, { error = null } = {}) {
@@ -470,11 +475,11 @@ function linkPaymentPage(s, id, { error = null } = {}) {
           <div class="table-wrap"><table>
             <thead><tr><th>Creado</th><th>Cobro</th><th>Estado</th><th class="num">Valor</th><th></th></tr></thead>
             <tbody>${options.map((c) => html`<tr>
-              <td>${fmtDate(c.createdAt)}</td>
-              <td>${c.description ?? "—"}${c.reference ? html`<div class="muted small">Ref. ${c.reference}</div>` : ""}${c.payerName ? html`<div class="muted small">Espera a ${c.payerName}</div>` : ""}</td>
+              <td class="t-date">${fmtDate(c.createdAt)}</td>
+              <td class="t-main">${c.description ?? "—"}${c.reference ? html`<div class="muted small">Ref. ${c.reference}</div>` : ""}${c.payerName ? html`<div class="muted small">Espera a ${c.payerName}</div>` : ""}</td>
               <td>${chargeStatus(c.status)}</td>
               <td class="num"><b>${fmtMoney(c.amount)}</b>${c.amount !== c.baseAmount ? html`<div class="muted small">pedido ${fmtMoney(c.baseAmount)}</div>` : ""}</td>
-              <td>${postButton(`/payments/${p.id}/link`, "Asociar", csrf, { tone: "primary", fields: { chargeId: c.id }, confirm: `¿Asociar este pago de ${fmtMoney(p.amount)} al cobro de ${fmtMoney(c.amount)}?` })}</td>
+              <td class="t-act">${postButton(`/payments/${p.id}/link`, "Asociar", csrf, { tone: "primary", fields: { chargeId: c.id }, confirm: `¿Asociar este pago de ${fmtMoney(p.amount)} al cobro de ${fmtMoney(c.amount)}?` })}</td>
             </tr>`)}</tbody></table></div>`}
       </div>`,
   });
@@ -511,9 +516,9 @@ function appsPage(s, error = null) {
           ? html`<p class="empty">Aún no hay apps.</p>`
           : html`<div class="table-wrap"><table><thead><tr><th>App</th><th>Webhook</th><th>Cuentas</th><th>Estado</th></tr></thead><tbody>
               ${apps.map((a) => html`<tr>
-                <td><a href="/apps/${a.id}"><b>${a.name}</b></a><div class="muted small">${a.id}</div></td>
-                <td>${a.webhookUrl ? html`<code>${a.webhookUrl}</code>` : html`<span class="muted">Sin webhook</span>`}</td>
-                <td>${store.accounts.list(a.id).length}</td>
+                <td class="t-main"><a href="/apps/${a.id}"><b>${a.name}</b></a><div class="muted small">${a.id}</div></td>
+                <td class="t-wide">${a.webhookUrl ? html`<code>${a.webhookUrl}</code>` : html`<span class="muted">Sin webhook</span>`}</td>
+                <td>${store.accounts.list(a.id).length} cuentas</td>
                 <td>${a.active ? badge("Activa", "ok") : badge("Inactiva", "muted")}</td>
               </tr>`)}
             </tbody></table></div>`}
@@ -582,10 +587,10 @@ function appPage(s, id, { error = null, newKey = null, secretShown = null } = {}
           ${keys.length
             ? html`<div class="table-wrap"><table><thead><tr><th>Nombre</th><th>Key</th><th>Último uso</th><th></th></tr></thead><tbody>
               ${keys.map((k) => html`<tr>
-                <td>${k.name}<div class="muted small">${fmtDate(k.createdAt)}</div></td>
+                <td class="t-main">${k.name}<div class="muted small">${fmtDate(k.createdAt)}</div></td>
                 <td><code>${k.prefix}…</code></td>
                 <td>${k.revokedAt ? badge("Revocada", "muted") : fmtDate(k.lastUsedAt)}</td>
-                <td>${k.revokedAt ? "" : postButton(`/apps/${id}/keys/${k.id}/revoke`, "Revocar", csrf, { tone: "danger", confirm: "¿Revocar esta API key? Lo que la use dejará de funcionar." })}</td>
+                <td class="t-act">${k.revokedAt ? "" : postButton(`/apps/${id}/keys/${k.id}/revoke`, "Revocar", csrf, { tone: "danger", confirm: "¿Revocar esta API key? Lo que la use dejará de funcionar." })}</td>
               </tr>`)}</tbody></table></div>`
             : html`<p class="empty">Sin API keys.</p>`}
           <form method="post" action="/apps/${id}/keys" class="row mt">
@@ -605,12 +610,12 @@ function appPage(s, id, { error = null, newKey = null, secretShown = null } = {}
           ? html`<p class="empty">Todavía no hay entregas.</p>`
           : html`<div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Evento</th><th>Estado</th><th>Intentos</th><th>Resultado</th><th></th></tr></thead><tbody>
             ${deliveries.map((d) => html`<tr>
-              <td>${fmtDate(d.created_at)}</td>
-              <td>${d.type ?? ""}<div class="muted small">${d.event_id}</div></td>
+              <td class="t-date">${fmtDate(d.created_at)}</td>
+              <td class="t-main">${d.type ?? ""}<div class="muted small">${d.event_id}</div></td>
               <td>${d.status === "delivered" ? badge("Entregado", "ok") : d.status === "failed" ? badge("Fallido", "bad") : badge("Pendiente", "warn")}</td>
-              <td>${d.attempts}</td>
-              <td>${d.last_status ? `HTTP ${d.last_status}` : ""}${d.last_error ? html`<div class="muted small">${d.last_error}</div>` : ""}${d.status === "pending" && d.attempts ? html`<div class="muted small">Próximo: ${fmtDate(d.next_attempt_at)}</div>` : ""}</td>
-              <td>${d.status !== "delivered" ? postButton(`/deliveries/${d.id}/retry`, "Reintentar", csrf, { fields: { back: `/apps/${id}` } }) : ""}</td>
+              <td>${d.attempts} ${d.attempts === 1 ? "intento" : "intentos"}</td>
+              <td class="t-wide">${d.last_status ? `HTTP ${d.last_status}` : ""}${d.last_error ? html`<div class="muted small">${d.last_error}</div>` : ""}${d.status === "pending" && d.attempts ? html`<div class="muted small">Próximo: ${fmtDate(d.next_attempt_at)}</div>` : ""}</td>
+              <td class="t-act">${d.status !== "delivered" ? postButton(`/deliveries/${d.id}/retry`, "Reintentar", csrf, { fields: { back: `/apps/${id}` } }) : ""}</td>
             </tr>`)}</tbody></table></div>`}
       </div>`,
   });
@@ -666,13 +671,13 @@ async function retryDelivery(s, id) {
 
 function accountsTable(accounts, appName) {
   if (accounts.length === 0) return html`<p class="empty">Sin cuentas receptoras.</p>`;
-  return html`<div class="table-wrap"><table><thead><tr><th>Cuenta</th><th>Dirección</th><th>App</th><th>Estado</th><th>Último pago</th></tr></thead><tbody>
+  return html`<div class="table-wrap"><table><thead><tr><th>Cuenta</th><th>Dirección</th><th>App</th><th>Estado</th><th>Actividad</th></tr></thead><tbody>
     ${accounts.map((a) => html`<tr>
-      <td><a href="/accounts/${a.id}"><b>${a.name}</b></a>${a.tenantRef ? html`<div class="muted small">Cliente: ${a.tenantRef}</div>` : ""}</td>
-      <td><code>${a.address}</code></td>
+      <td class="t-main"><a href="/accounts/${a.id}"><b>${a.name}</b></a>${a.tenantRef ? html`<div class="muted small">Cliente: ${a.tenantRef}</div>` : ""}</td>
+      <td class="t-wide"><code>${a.address}</code></td>
       <td>${appName[a.appId] ?? a.appId}</td>
       <td>${accountStatus(a.status)}</td>
-      <td>${fmtDate(a.lastPaymentAt)}</td>
+      <td>${a.lastPaymentAt ? `Último pago ${fmtDate(a.lastPaymentAt)}` : "Sin pagos"}</td>
     </tr>`)}</tbody></table></div>`;
 }
 
@@ -810,7 +815,7 @@ function accountPage(s, id, { error = null } = {}) {
         <div class="card" data-eml-check="/accounts/${id}/check" data-csrf="${csrf}">
           <h2>Probar un aviso</h2>
           <p class="muted small">Sube un aviso del banco (.eml: en Gmail, ⋮ → Descargar mensaje) y mira qué leería pagoradar para esta cuenta. No guarda nada.</p>
-          <input type="file" accept=".eml,message/rfc822">
+          <label class="drop">${icon("upload")}<span><b>Elegir un aviso (.eml)</b><span class="muted small">o arrástralo aquí</span></span><input type="file" accept=".eml,message/rfc822"></label>
           <pre hidden></pre>
         </div>
       </div>
@@ -962,12 +967,12 @@ function chargesPage(s) {
           <tbody>${rows.map((c) => {
             const payment = c.paymentId ? store.payments.get(c.paymentId) : null;
             return html`<tr>
-              <td>${fmtDate(c.createdAt)}<div class="muted small">vence ${fmtDate(c.expiresAt)}</div></td>
-              <td>${c.description ?? "—"}${c.reference ? html`<div class="muted small">Ref. ${c.reference}</div>` : ""}<div class="muted small">${appName[c.appId] ?? c.appId}</div></td>
-              <td><a href="/accounts/${c.accountId}">${accountName[c.accountId] ?? c.accountId}</a></td>
+              <td class="t-date">${fmtDate(c.createdAt)}<div class="muted small">vence ${fmtDate(c.expiresAt)}</div></td>
+              <td class="t-main"><b>${c.description ?? "—"}</b>${c.reference ? html`<div class="muted small">Ref. ${c.reference}</div>` : ""}<div class="muted small">${appName[c.appId] ?? c.appId}</div></td>
+              <td><a class="quiet" href="/accounts/${c.accountId}">${accountName[c.accountId] ?? c.accountId}</a></td>
               <td>${chargeStatus(c.status)}${payment ? html`<div class="muted small">${payment.payerName} · ${fmtDate(payment.paidAt)}</div>` : ""}</td>
               <td class="num"><b>${fmtMoney(c.amount)}</b>${c.amount !== c.baseAmount ? html`<div class="muted small">pedido ${fmtMoney(c.baseAmount)}</div>` : ""}</td>
-              <td><a href="/c/${c.id}" target="_blank" rel="noopener">Página de pago</a>${c.status === "pending" ? html`<div class="mt">${postButton(`/charges/${c.id}/cancel`, "Cancelar", csrf, { tone: "danger", confirm: "¿Cancelar este cobro? Su página de pago dirá que fue cancelado." })}</div>` : ""}</td>
+              <td class="t-act"><div class="row"><a class="btn btn-small" href="/c/${c.id}" target="_blank" rel="noopener">Página de pago</a>${c.status === "pending" ? html`${postButton(`/charges/${c.id}/cancel`, "Cancelar", csrf, { tone: "danger", confirm: "¿Cancelar este cobro? Su página de pago dirá que fue cancelado.", small: true })}` : ""}</div></td>
             </tr>`;
           })}</tbody></table></div>`}
       </div>
@@ -988,10 +993,10 @@ function inboxTable(rows) {
   if (rows.length === 0) return html`<p class="empty">Nada por aquí.</p>`;
   return html`<div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Motivo</th><th>De</th><th>Asunto</th></tr></thead><tbody>
     ${rows.map((r) => html`<tr>
-      <td>${fmtDate(r.received_at)}</td>
-      <td>${REASON_LABEL[r.reason] ?? r.reason}${r.code ? html`<div>Código: <b>${r.code}</b></div>` : ""}</td>
+      <td class="t-date">${fmtDate(r.received_at)}</td>
+      <td class="t-main">${REASON_LABEL[r.reason] ?? r.reason}${r.code ? html`<div>Código: <b>${r.code}</b></div>` : ""}</td>
       <td>${r.from_addr ?? ""}</td>
-      <td>${r.subject ?? ""}${r.snippet ? html`<details><summary>Ver texto</summary><pre>${r.snippet}</pre></details>` : ""}</td>
+      <td class="t-wide">${r.subject ?? ""}${r.snippet ? html`<details><summary>Ver texto</summary><pre>${r.snippet}</pre></details>` : ""}</td>
     </tr>`)}</tbody></table></div>`;
 }
 
@@ -1035,10 +1040,10 @@ function settingsPage(s, { error = null, tempPassword = null } = {}) {
           <h2>Administradores</h2>
           <div class="table-wrap"><table><thead><tr><th>Correo</th><th>2 pasos</th><th>Último ingreso</th><th></th></tr></thead><tbody>
             ${admins.map((a) => html`<tr>
-              <td>${a.email}${a.name ? html`<div class="muted small">${a.name}</div>` : ""}</td>
+              <td class="t-main">${a.email}${a.name ? html`<div class="muted small">${a.name}</div>` : ""}</td>
               <td>${a.totpEnabled ? badge("Activo", "ok") : badge("Pendiente", "warn")}</td>
               <td>${fmtDate(a.lastLoginAt)}</td>
-              <td>${a.id === s.admin.id ? html`<span class="muted small">Tú</span>` : postButton(`/settings/admins/${a.id}/delete`, "Quitar", csrf, { tone: "danger", confirm: `¿Quitar a ${a.email}?` })}</td>
+              <td class="t-act">${a.id === s.admin.id ? html`<span class="muted small">Tú</span>` : postButton(`/settings/admins/${a.id}/delete`, "Quitar", csrf, { tone: "danger", confirm: `¿Quitar a ${a.email}?` })}</td>
             </tr>`)}
           </tbody></table></div>
           <form method="post" action="/settings/admins" class="row mt">
@@ -1089,6 +1094,7 @@ function mePage(s, { error = null } = {}) {
   const first = s.admin.mustChangePassword;
   return page(s, {
     title: "Mi cuenta",
+    active: "/me",
     status: error ? 400 : 200,
     body: html`
       <div class="head"><div><h1>Mi cuenta</h1><p class="muted">${s.admin.email}</p></div></div>
@@ -1147,13 +1153,13 @@ function auditPage(s) {
   const rows = s.ctx.store.audit.list(300);
   return page(s, {
     title: "Registro de cambios",
-    active: "/settings",
+    active: "/audit",
     body: html`
       <div class="head"><div><h1>Registro de cambios</h1><p class="muted">Quién hizo qué en el panel (se guarda un año).</p></div><a href="/settings">← Ajustes</a></div>
       <div class="card">${rows.length === 0
         ? html`<p class="empty">Sin registros.</p>`
         : html`<div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Quién</th><th>Qué</th><th>Sobre</th></tr></thead><tbody>
-          ${rows.map((r) => html`<tr><td>${fmtDate(r.at)}</td><td>${r.admin_email ?? ""}</td><td>${r.action}${r.detail ? html`<div class="muted small">${r.detail}</div>` : ""}</td><td>${r.target ?? ""}</td></tr>`)}
+          ${rows.map((r) => html`<tr><td class="t-date">${fmtDate(r.at)}</td><td>${r.admin_email ?? ""}</td><td class="t-main">${r.action}${r.detail ? html`<div class="muted small">${r.detail}</div>` : ""}</td><td>${r.target ?? ""}</td></tr>`)}
         </tbody></table></div>`}</div>`,
   });
 }
