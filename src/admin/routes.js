@@ -34,6 +34,16 @@ const MIN_PASSWORD = 10;
 const STATIC = {
   "/static/admin.css": { type: "text/css; charset=utf-8", file: new URL("../../public/admin.css", import.meta.url) },
   "/static/admin.js": { type: "text/javascript; charset=utf-8", file: new URL("../../public/admin.js", import.meta.url) },
+  "/manifest.webmanifest": { type: "application/manifest+json; charset=utf-8", file: new URL("../../public/manifest.webmanifest", import.meta.url) },
+  "/sw.js": { type: "text/javascript; charset=utf-8", file: new URL("../../public/sw.js", import.meta.url), cache: "no-cache" },
+  "/favicon.svg": { type: "image/svg+xml", file: new URL("../../public/favicon.svg", import.meta.url) },
+  "/favicon.ico": { type: "image/png", file: new URL("../../public/icons/favicon-48.png", import.meta.url) },
+  ...Object.fromEntries(
+    ["icon-192.png", "icon-512.png", "maskable-512.png", "apple-touch-icon.png", "favicon-32.png", "icon.svg"].map((f) => [
+      `/icons/${f}`,
+      { type: f.endsWith(".svg") ? "image/svg+xml" : "image/png", file: new URL(`../../public/icons/${f}`, import.meta.url) },
+    ]),
+  ),
 };
 const loginLimit = rateLimiter(10, 15 * 60_000);
 const staticCache = new Map();
@@ -111,7 +121,7 @@ export async function handleAdmin(req, res, url, ctx) {
   if (method === "GET" && STATIC[path]) {
     const s = STATIC[path];
     if (!staticCache.has(path)) staticCache.set(path, readFileSync(s.file));
-    res.writeHead(200, { "Content-Type": s.type, "Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff" });
+    res.writeHead(200, { "Content-Type": s.type, "Cache-Control": s.cache ?? "public, max-age=86400", "X-Content-Type-Options": "nosniff" });
     return res.end(staticCache.get(path));
   }
 

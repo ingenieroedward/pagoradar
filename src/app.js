@@ -23,10 +23,6 @@ export function createApp(ctx) {
       const url = new URL(req.url, "http://x");
       const path = url.pathname.replace(/\/+$/, "") || "/";
 
-      if (path === "/favicon.ico") {
-        res.writeHead(204, { "Cache-Control": "public, max-age=86400" });
-        return res.end();
-      }
       if (path === "/health" && req.method === "GET") {
         store.db.prepare("SELECT 1").get();
         return sendJson(res, 200, { ok: true });
