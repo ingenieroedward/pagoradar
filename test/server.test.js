@@ -5,8 +5,10 @@ import { validateSources } from "../src/config.js";
 import { openStore } from "../src/store.js";
 import { createApp } from "../src/app.js";
 import { deliverDue, RETRY_DELAYS_MS, verifySignature } from "../src/webhooks.js";
+import { importLegacySources } from "../src/importLegacy.js";
+import { masterKeyFrom } from "../src/security.js";
 import { deliver } from "../worker/src/index.js";
-import { OWNER, bancolombiaEmail, buildEmail, nequiNegociosEmail, resolverFor } from "./fixtures.js";
+import { OWNER, bancolombiaEmail, buildEmail, gmailConfirmationEmail, nequiNegociosEmail, resolverFor } from "./fixtures.js";
 
 const INGEST_SECRET = "i".repeat(40);
 const API_KEY = "k".repeat(32);
@@ -26,12 +28,10 @@ before(async () => {
     });
   });
   const hookBase = await listen(hookServer);
-  config = {
-    ingestSecret: INGEST_SECRET,
-    adminToken: "a".repeat(30),
-    sources: validateSources([{ id: "rifas", addresses: [ADDRESS], ownerEmails: [OWNER], apiKey: API_KEY, webhooks: [{ url: `${hookBase}/hook`, secret: HOOK_SECRET }] }]),
-  };
-  store = openStore(":memory:");
+  config = { ingestSecret: INGEST_SECRET, masterKey: masterKeyFrom("ab".repeat(32)), publicUrl: null, legacySources: [] };
+  store = openStore(":memory:", { masterKey: config.masterKey });
+  // The old JSON configuration, imported into the database: app "rifas" with its key, secret and address.
+  importLegacySources(store, validateSources([{ id: "rifas", addresses: [ADDRESS], ownerEmails: [OWNER], apiKey: API_KEY, webhooks: [{ url: `${hookBase}/hook`, secret: HOOK_SECRET }] }]));
   server = createServer(createApp({ config, store, resolver: resolverFor(), log: () => {} }));
   base = await listen(server);
 });
@@ -54,8 +54,11 @@ const waitFor = async (pred, ms = 3000) => {
 
 test("worker -> ingest -> payment stored -> signed webhook", async () => {
   assert.equal(await ingest(await nequiNegociosEmail({ tx: "e2e-1" })), true);
-  assert.ok(await waitFor(() => received.length === 1), "webhook arrived");
-  const hook = received[0];
+  assert.ok(await waitFor(() => received.length === 2), "webhooks arrived");
+  const types = received.map((r) => JSON.parse(r.body).type).sort();
+  assert.deepEqual(types, ["account.activated", "payment.received"], "first genuine notice also activates the account");
+  assert.equal(store.accounts.byAddress(ADDRESS).status, "active");
+  const hook = received.find((r) => JSON.parse(r.body).type === "payment.received");
   assert.ok(verifySignature(HOOK_SECRET, hook.headers["pagoradar-signature"], hook.body), "valid signature");
   assert.equal(verifySignature("otro-secreto-xxxxxxxxxxxxxxxx", hook.headers["pagoradar-signature"], hook.body), false);
   const event = JSON.parse(hook.body);
@@ -64,6 +67,8 @@ test("worker -> ingest -> payment stored -> signed webhook", async () => {
   assert.equal(event.data.amount, 25000);
   assert.equal(event.data.payerName, "Ana Maria Prueba Lopez");
   assert.equal(event.data.source, "rifas");
+  assert.equal(event.data.account.id, store.accounts.byAddress(ADDRESS).id);
+  received = received.filter((r) => r === hook);
 });
 
 test("the same notice again is a duplicate: no second payment or webhook", async () => {
@@ -99,21 +104,22 @@ test("worker retries when the service is down", async () => {
   assert.equal(calls, 3);
 });
 
-test("forged, foreign and unknown-address emails are rejected and listed in the admin inbox", async () => {
+test("forged, foreign and unknown-address emails are rejected and kept in the inbox", async () => {
   const forged = Buffer.from(buildEmail({ from: "notificaciones@nequi.com.co", subject: "Detalle de tu venta por Bre-B", html: "<p>Venta exitosa por $ 999.999 Pagador: YO MISMO</p>" }));
   assert.deepEqual(await (await rawIngest(forged)).json(), { result: "rejected", reason: "dkim_failed" });
   assert.deepEqual(await (await rawIngest(await nequiNegociosEmail({ tx: "z" }, { to: "otro@gmail.com" }))).json(), { result: "rejected", reason: "not_owner" });
   assert.deepEqual(await (await rawIngest(await bancolombiaEmail(), "nadie@pagos.example.com")).json(), { result: "rejected", reason: "unknown_address" });
-  const gmail = Buffer.from(buildEmail({ from: "forwarding-noreply@google.com", subject: "Confirmación de reenvío", text: "Código de confirmación: 987654321" }));
+  const gmail = await gmailConfirmationEmail({ subject: "Confirmación de reenvío", text: "Código de confirmación: 987654321", to: ADDRESS });
   await rawIngest(gmail);
-  assert.equal((await fetch(`${base}/admin/inbox`)).status, 401);
-  const inbox = (await (await fetch(`${base}/admin/inbox`, { headers: { Authorization: `Bearer ${config.adminToken}` } })).json()).inbox;
+  const inbox = store.inbox.list();
   assert.deepEqual(inbox.map((i) => i.reason), ["gmail_forwarding_confirmation", "unknown_address", "not_owner", "dkim_failed"]);
   assert.equal(inbox[0].code, "987654321");
   assert.equal(inbox[3].snippet, null, "text of forged emails is not kept");
+  const account = store.accounts.byAddress(ADDRESS);
+  assert.equal(account.confirmationCode, "987654321", "the Gmail code is shown on the account");
 });
 
-test("GET /v1/payments with the source's API key", async () => {
+test("GET /v1/payments with the app's API key (the imported legacy key works)", async () => {
   assert.equal((await fetch(`${base}/v1/payments`)).status, 401);
   assert.equal((await fetch(`${base}/v1/payments`, { headers: { Authorization: "Bearer nope" } })).status, 401);
   await ingest(await bancolombiaEmail());
@@ -131,15 +137,15 @@ test("webhook retries with backoff, then delivered; admin retry", async () => {
   await ingest(await nequiNegociosEmail({ tx: "retry-1" }));
   assert.ok(await waitFor(() => received.length === 1));
   await new Promise((r) => setTimeout(r, 50));
-  let d = store.listDeliveries({ status: "pending" })[0];
+  let d = store.deliveries.list({ status: "pending" })[0];
   assert.equal(d.attempts, 1);
   assert.equal(d.last_status, 500);
   // Not due yet: nothing is sent.
-  assert.equal(await deliverDue(store, config.sources), 0);
+  assert.equal(await deliverDue(store), 0);
   hookStatus = 200;
-  await deliverDue(store, config.sources, { now: Date.now() + RETRY_DELAYS_MS[0] + 1000 });
+  await deliverDue(store, { now: Date.now() + RETRY_DELAYS_MS[0] + 1000 });
   assert.equal(received.length, 2);
-  assert.equal(store.listDeliveries({ status: "pending" }).length, 0);
+  assert.equal(store.deliveries.list({ status: "pending" }).length, 0);
   // gives up after the last delay
   hookStatus = 503;
   await ingest(await nequiNegociosEmail({ tx: "retry-2" }));
@@ -147,14 +153,14 @@ test("webhook retries with backoff, then delivered; admin retry", async () => {
   let now = Date.now();
   for (const delay of RETRY_DELAYS_MS) {
     now += delay + 1000;
-    await deliverDue(store, config.sources, { now });
+    await deliverDue(store, { now });
   }
-  d = store.listDeliveries({ status: "failed" })[0];
+  d = store.deliveries.list({ status: "failed" })[0];
   assert.equal(d.attempts, RETRY_DELAYS_MS.length + 1);
   hookStatus = 200;
-  const retry = await fetch(`${base}/admin/deliveries/${d.id}/retry`, { method: "POST", headers: { Authorization: `Bearer ${config.adminToken}` } });
-  assert.equal(retry.status, 200);
-  assert.equal(store.listDeliveries({ status: "failed" }).length, 0);
+  assert.ok(store.deliveries.retry(d.id));
+  await deliverDue(store);
+  assert.equal(store.deliveries.list({ status: "failed" }).length, 0);
 });
 
 test("test webhook", async () => {

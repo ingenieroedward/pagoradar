@@ -29,20 +29,6 @@ export async function analyzeEmail(raw, { ownerEmails = [], banks = BANK_IDS, re
   const text = emailText(mail);
   const base = { from, subject, text, messageId: mail.messageId ?? null };
 
-  if (from === "forwarding-noreply@google.com") {
-    // The code is in the subject, "(#123456789) Confirmación de reenvío de Gmail…", and somewhere in the text.
-    const code =
-      subject.match(/#\s?(\d{6,12})/)?.[1] ??
-      text.match(/(?:c[óo]digo|code)[^0-9]{0,60}(\d{6,12})/i)?.[1] ??
-      text.match(/\b(\d{9})\b/)?.[1] ??
-      null;
-    // Clicking this link confirms too (Google sends one with or without a code).
-    const link = (mail.html ?? "").match(/https:\/\/(?:mail-settings\.google\.com|mail\.google\.com)\/[^\s"'<>]+/)?.[0]?.replace(/&amp;/g, "&") ??
-      text.match(/https:\/\/(?:mail-settings\.google\.com|mail\.google\.com)\/\S+/)?.[0] ??
-      null;
-    return { ok: false, reason: "gmail_forwarding_confirmation", code, link, ...base };
-  }
-
   // Exactly one From and one To: with duplicates, what DKIM signed and what a reader sees can differ.
   const headerCount = (name) => mail.headers.filter((h) => h.key === name).length;
   if (headerCount("from") !== 1 || headerCount("to") > 1) return { ok: false, reason: "ambiguous_headers", ...base };
@@ -60,6 +46,23 @@ export async function analyzeEmail(raw, { ownerEmails = [], banks = BANK_IDS, re
   } catch {
     return { ok: false, reason: "dkim_error", ...base };
   }
+  // Gmail's forwarding confirmation: only when Google really signed it, or anyone could put a fake code on screen.
+  if (from === "forwarding-noreply@google.com") {
+    const signed = auth.dkim.results.some((r) => r.status?.result === "pass" && !r.canonBodyLengthLimited && domainIn(r.signingDomain, ["google.com"]));
+    if (!signed) return { ok: false, reason: "dkim_failed", ...base };
+    // The code is in the subject, "(#123456789) Confirmación de reenvío de Gmail…", and somewhere in the text.
+    const code =
+      subject.match(/#\s?(\d{6,12})/)?.[1] ??
+      text.match(/(?:c[óo]digo|code)[^0-9]{0,60}(\d{6,12})/i)?.[1] ??
+      text.match(/\b(\d{9})\b/)?.[1] ??
+      null;
+    // Clicking this link confirms too (Google sends one with or without a code).
+    const link = (mail.html ?? "").match(/https:\/\/(?:mail-settings\.google\.com|mail\.google\.com)\/[^\s"'<>]+/)?.[0]?.replace(/&amp;/g, "&") ??
+      text.match(/https:\/\/(?:mail-settings\.google\.com|mail\.google\.com)\/\S+/)?.[0] ??
+      null;
+    return { ok: false, reason: "gmail_forwarding_confirmation", code, link, ...base };
+  }
+
   const fromDomain = from.split("@")[1] ?? "";
   const good = auth.dkim.results.filter(
     (r) =>

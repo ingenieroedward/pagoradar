@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "mailauth": "^7.1.0",
-    "postal-mime": "^4.0.2"
+    "postal-mime": "^4.0.2",
+    "qrcode": "^1.5.4"
   }
 }

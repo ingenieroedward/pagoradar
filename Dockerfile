@@ -5,6 +5,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY src ./src
 COPY scripts ./scripts
+COPY public ./public
 RUN mkdir -p /app/data && chown -R node:node /app/data
 USER node
 ENV PORT=3000 DATABASE_PATH=/app/data/pagoradar.db

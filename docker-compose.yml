@@ -6,9 +6,13 @@ services:
     restart: unless-stopped
     environment:
       INGEST_SECRET: ${INGEST_SECRET}
-      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
-      PAGORADAR_SOURCES: ${PAGORADAR_SOURCES}
+      MASTER_KEY: ${MASTER_KEY}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      INBOUND_DOMAIN: ${INBOUND_DOMAIN:-}
+      SETUP_TOKEN: ${SETUP_TOKEN:-}
       RETENTION_DAYS: ${RETENTION_DAYS:-180}
+      # Configuración antigua: se importa una sola vez a la base de datos; después se puede quitar.
+      PAGORADAR_SOURCES: ${PAGORADAR_SOURCES:-[]}
     volumes:
       - pagoradar-data:/app/data
     expose:

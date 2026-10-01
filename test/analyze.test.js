@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { analyzeEmail } from "../src/analyze.js";
-import { OWNER, bancolombiaEmail, buildEmail, nequiNegociosEmail, nequiNegociosHtml, nequiPersonalEmail, resolverFor, sign } from "./fixtures.js";
+import { OWNER, bancolombiaEmail, buildEmail, gmailConfirmationEmail, nequiNegociosEmail, nequiNegociosHtml, nequiPersonalEmail, resolverFor, sign } from "./fixtures.js";
 
 const opts = { ownerEmails: [OWNER], resolver: resolverFor() };
 
@@ -89,15 +89,20 @@ test("duplicate From headers are refused", async () => {
 });
 
 test("Gmail forwarding confirmation: the code is read", async () => {
-  const raw = Buffer.from(buildEmail({ from: "Equipo de Gmail <forwarding-noreply@google.com>", subject: "(#123456789) Confirmación de reenvío de Gmail", text: "Código de confirmación: 123456789\r\nPara permitir..." }));
+  const raw = await gmailConfirmationEmail();
   const r = await analyzeEmail(raw, opts);
   assert.equal(r.reason, "gmail_forwarding_confirmation");
   assert.equal(r.code, "123456789");
   // Code only in the subject, body worded differently.
-  const other = Buffer.from(buildEmail({ from: "forwarding-noreply@google.com", subject: "(#555666777) Confirmación de reenvío de Gmail: recibir correo de x@gmail.com", text: "Para confirmar esta solicitud, haz clic en el siguiente vínculo." }));
+  const other = await gmailConfirmationEmail({ subject: "(#555666777) Confirmación de reenvío de Gmail: recibir correo de x@gmail.com", text: "Para confirmar esta solicitud, haz clic en el siguiente vínculo." });
   assert.equal((await analyzeEmail(other, opts)).code, "555666777");
-  const linkOnly = Buffer.from(buildEmail({ from: "forwarding-noreply@google.com", subject: "Confirmación de reenvío de Gmail", html: '<p><a href="https://mail-settings.google.com/mail/vf-%5BABC%5D-xyz?a=1&amp;b=2">Confirmar</a></p>' }));
+  const linkOnly = await gmailConfirmationEmail({ subject: "Confirmación de reenvío de Gmail", text: null, html: '<p><a href="https://mail-settings.google.com/mail/vf-%5BABC%5D-xyz?a=1&amp;b=2">Confirmar</a></p>' });
   assert.equal((await analyzeEmail(linkOnly, opts)).link, "https://mail-settings.google.com/mail/vf-%5BABC%5D-xyz?a=1&b=2");
+  // A fake one (not signed by Google) doesn't put a code on screen.
+  const fake = Buffer.from(buildEmail({ from: "forwarding-noreply@google.com", subject: "(#999999999) Confirmación de reenvío de Gmail", text: "Código de confirmación: 999999999" }));
+  const r2 = await analyzeEmail(fake, opts);
+  assert.equal(r2.reason, "dkim_failed");
+  assert.equal(r2.code, undefined);
 });
 
 test("garbage doesn't throw", async () => {

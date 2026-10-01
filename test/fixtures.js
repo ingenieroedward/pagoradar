@@ -11,7 +11,7 @@ export const OWNER = "dueno.prueba@gmail.com";
 export const SELECTOR = "test";
 
 /** DNS for the tests: our key at test._domainkey.<any domain in `domains`>. */
-export function resolverFor(domains = ["notificaciones.nequi.com.co", "an.notificacionesbancolombia.com", "evil.example"]) {
+export function resolverFor(domains = ["notificaciones.nequi.com.co", "an.notificacionesbancolombia.com", "evil.example", "google.com"]) {
   return async (name, type) => {
     const n = name.toLowerCase();
     if (type === "TXT" && domains.some((d) => n === `${SELECTOR}._domainkey.${d}`)) return [[`v=DKIM1; k=rsa; p=${PUBLIC_B64}`]];
@@ -75,3 +75,7 @@ export const bancolombiaEmail = (o = {}, h = {}) =>
     "an.notificacionesbancolombia.com",
     { headerList: "From:Reply-To:Subject:To:MIME-Version:Content-Type" },
   );
+
+/** Gmail's forwarding confirmation, signed by google.com (as the real one is). */
+export const gmailConfirmationEmail = ({ subject = "(#123456789) Confirmación de reenvío de Gmail", text = "Código de confirmación: 123456789\r\nPara permitir...", html, to = "pagos-test@pagos.example.com" } = {}) =>
+  sign(buildEmail({ from: "Equipo de Gmail <forwarding-noreply@google.com>", to, subject, text, html }), "google.com", { headerList: "From:To:Subject:Date:Message-ID" });
