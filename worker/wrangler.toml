@@ -1,0 +1,9 @@
+# Cloudflare Email Worker for pagoradar. Deploy with:  npx wrangler deploy   (from this folder)
+# then:  npx wrangler secret put INGEST_SECRET
+name = "pagoradar-email"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+[vars]
+PAGORADAR_URL = "https://pagoradar.edwsystem.com"
+# FALLBACK_FORWARD = "tu-correo@gmail.com"   # optional; must be a verified destination in Email Routing
