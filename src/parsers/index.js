@@ -7,6 +7,16 @@ export const PARSERS = [nequiNegocios, nequi, bancolombia];
 
 export const BANK_IDS = PARSERS.map((p) => p.id);
 
+/** Who sends each bank's notices: what the owner's Gmail filter forwards. */
+export const BANK_SENDERS = {
+  nequi_negocios: "notificaciones@nequi.com.co",
+  nequi: "notificaciones@nequi.com.co",
+  bancolombia: "alertasynotificaciones@an.notificacionesbancolombia.com",
+};
+
+/** The Gmail filter "De:" text for a set of banks. */
+export const gmailFilterFor = (banks) => [...new Set(banks.map((b) => BANK_SENDERS[b]).filter(Boolean))].join(" OR ");
+
 /** Is `domain` the same as, or a subdomain of, one of `allowed`? */
 export function domainIn(domain, allowed) {
   const d = String(domain || "").toLowerCase().replace(/\.$/, "");

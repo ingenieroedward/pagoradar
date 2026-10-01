@@ -1,14 +1,13 @@
 import { readFileSync } from "node:fs";
 import QRCode from "qrcode";
 import { analyzeEmail } from "../analyze.js";
-import { BANK_IDS } from "../parsers/index.js";
+import { BANK_IDS, gmailFilterFor } from "../parsers/index.js";
 import { clientIp, cookie, list, parseCookies, parseForm, rateLimiter, readBody, redirect, sendHtml, sendJson } from "../http.js";
 import { hashPassword, newTotpSecret, randomToken, safeEqual, totpUri, verifyPassword, verifyTotp } from "../security.js";
 import { sendTestEvent } from "../api.js";
 import { deliverDue } from "../webhooks.js";
 import {
   BANK_LABEL,
-  BANK_SENDERS,
   REASON_LABEL,
   accountStatus,
   badge,
@@ -686,7 +685,7 @@ function accountPage(s, id, { error = null } = {}) {
   if (!a) return page(s, { title: "No encontrada", body: html`<div class="card">Cuenta no encontrada.</div>`, status: 404 });
   const app = store.apps.get(a.appId);
   const csrf = s.session.csrf;
-  const senders = [...new Set(a.banks.map((b) => BANK_SENDERS[b]).filter(Boolean))].join(" OR ");
+  const senders = gmailFilterFor(a.banks);
   const recent = store.payments.search({ accountId: id, limit: 10 }).rows;
   const rejected = store.inbox.list({ accountId: id, limit: 10 });
   const waiting = a.status === "pending";
