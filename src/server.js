@@ -3,14 +3,26 @@ import { loadConfig } from "./config.js";
 import { openStore } from "./store.js";
 import { createApp } from "./app.js";
 import { deliverDue } from "./webhooks.js";
+import { importLegacySources } from "./importLegacy.js";
+import { randomToken } from "./security.js";
 
 const config = loadConfig();
-const store = openStore(config.dbPath);
+const store = openStore(config.dbPath, { masterKey: config.masterKey });
 const log = (msg) => console.log(`${new Date().toISOString()} ${msg}`);
-const server = createServer(createApp({ config, store, log }));
 
+importLegacySources(store, config.legacySources, log);
+if (config.inboundDomain && !store.settings.get("inbound_domain")) store.settings.set("inbound_domain", config.inboundDomain);
+
+// No admin yet: a one-time link to create the first one (SETUP_TOKEN, or a random token printed here).
+let setupToken = null;
+if (store.admins.count() === 0) {
+  setupToken = config.setupToken ?? randomToken(18);
+  log(`No hay administrador. Créalo en: ${config.publicUrl ?? `http://localhost:${config.port}`}/setup?token=${setupToken}`);
+}
+
+const server = createServer(createApp({ store, config, log, get setupToken() { return setupToken; } }));
 server.listen(config.port, () => {
-  log(`pagoradar escuchando en :${config.port} · fuentes: ${config.sources.map((s) => s.id).join(", ") || "(ninguna)"}`);
+  log(`pagoradar escuchando en :${config.port} · ${store.apps.list().length} apps · ${store.accounts.list().length} cuentas receptoras`);
 });
 
 // Webhook retries every 15 s; retention once an hour.
@@ -19,15 +31,16 @@ const tick = setInterval(async () => {
   if (delivering) return;
   delivering = true;
   try {
-    await deliverDue(store, config.sources, { log });
+    await deliverDue(store, { log });
   } catch (e) {
     log(`error enviando webhooks: ${e?.message ?? e}`);
   } finally {
     delivering = false;
   }
 }, 15_000);
-const cleanup = setInterval(() => store.cleanup(config.retentionDays), 3600_000);
-store.cleanup(config.retentionDays);
+const retention = () => store.cleanup(Number(store.settings.get("retention_days", config.retentionDays)));
+const cleanup = setInterval(retention, 3600_000);
+retention();
 
 for (const sig of ["SIGTERM", "SIGINT"]) {
   process.on(sig, () => {

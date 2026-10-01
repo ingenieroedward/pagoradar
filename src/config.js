@@ -1,26 +1,29 @@
 import { readFileSync } from "node:fs";
 import { BANK_IDS } from "./parsers/index.js";
+import { masterKeyFrom } from "./security.js";
 
 /**
- * Configuration comes from the environment. Sources (one per app or business that receives payments)
- * are JSON, in PAGORADAR_SOURCES or in the file PAGORADAR_SOURCES_FILE:
+ * Only what can't live in the database comes from the environment:
  *
- *   [{
- *     "id": "ibirifas",
- *     "addresses": ["pagos-ibirifas-k3x9@pagos.edwsystem.com"],   // where the Worker delivers its mail
- *     "ownerEmails": ["tu-correo@gmail.com"],                      // the inbox the bank writes to
- *     "banks": ["nequi_negocios", "nequi", "bancolombia"],         // optional, default all
- *     "apiKey": "…",                                               // for GET /v1/payments
- *     "webhooks": [{ "url": "https://app/api/…", "secret": "…" }]
- *   }]
+ *   INGEST_SECRET   shared with the Cloudflare Worker (min. 32 chars)
+ *   MASTER_KEY      encrypts webhook and 2-step secrets in the database (openssl rand -hex 32)
+ *   PUBLIC_URL      https://pagoradar.example.com — links, secure cookies, origin check
+ *   INBOUND_DOMAIN  default domain for new receiving addresses (pagos.example.com); editable in Ajustes
+ *   SETUP_TOKEN     optional: the token for creating the first admin (otherwise one is printed in the logs)
+ *
+ * Everything else (apps, receiving accounts, keys, webhooks) is managed from the panel. PAGORADAR_SOURCES,
+ * the old JSON configuration, is imported once into the database on first start and then ignored.
  */
 export function loadConfig(env = process.env) {
   const ingestSecret = env.INGEST_SECRET ?? "";
   if (ingestSecret.length < 32) throw new Error("INGEST_SECRET debe tener al menos 32 caracteres.");
+  const masterKey = masterKeyFrom(env.MASTER_KEY);
+  const publicUrl = String(env.PUBLIC_URL ?? "").trim().replace(/\/+$/, "") || null;
+  if (publicUrl && !/^https?:\/\//.test(publicUrl)) throw new Error("PUBLIC_URL debe empezar por https://");
   const rawSources = env.PAGORADAR_SOURCES_FILE ? readFileSync(env.PAGORADAR_SOURCES_FILE, "utf8") : (env.PAGORADAR_SOURCES ?? "[]");
-  let list;
+  let legacy;
   try {
-    list = JSON.parse(rawSources);
+    legacy = JSON.parse(rawSources);
   } catch (e) {
     throw new Error(`PAGORADAR_SOURCES no es JSON válido: ${e.message}`);
   }
@@ -28,9 +31,12 @@ export function loadConfig(env = process.env) {
     port: Number(env.PORT ?? 3000),
     dbPath: env.DATABASE_PATH ?? "./data/pagoradar.db",
     ingestSecret,
-    adminToken: env.ADMIN_TOKEN && env.ADMIN_TOKEN.length >= 24 ? env.ADMIN_TOKEN : null,
+    masterKey,
+    publicUrl,
+    inboundDomain: String(env.INBOUND_DOMAIN ?? "").trim().toLowerCase() || null,
+    setupToken: env.SETUP_TOKEN && env.SETUP_TOKEN.length >= 16 ? env.SETUP_TOKEN : null,
     retentionDays: Number(env.RETENTION_DAYS ?? 180),
-    sources: validateSources(list),
+    legacySources: validateSources(legacy),
   };
 }
 

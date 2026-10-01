@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 /** Waits after each failed attempt: 30 s, 2 min, 10 min, 30 min, 1 h, 3 h, 6 h, 12 h, 24 h — then it gives up. */
 export const RETRY_DELAYS_MS = [30e3, 120e3, 600e3, 1800e3, 3600e3, 3 * 3600e3, 6 * 3600e3, 12 * 3600e3, 24 * 3600e3];
@@ -18,57 +18,68 @@ export function verifySignature(secret, header, body, toleranceSec = 300, now = 
   return expected.length === given.length && timingSafeEqual(expected, given);
 }
 
-export function paymentEvent(payment, type = "payment.received") {
-  return {
-    id: `evt_${payment.id.replace(/^pay_/, "")}`,
-    type,
-    createdAt: new Date().toISOString(),
-    source: payment.source,
-    data: payment,
-  };
+/** An event for an app. `type`: payment.received, payment.test, account.confirmation_code, account.activated… */
+export function makeEvent(type, appId, data, id = `evt_${randomBytes(10).toString("hex")}`) {
+  return { id, type, createdAt: new Date().toISOString(), source: appId, data };
 }
 
-/** Queues one event for every webhook of its source. */
-export function queueEvent(store, source, event) {
-  const body = JSON.stringify(event);
-  for (const w of source.webhooks) store.queueDelivery(event.id, source.id, w.url, body);
+/** payment.received for a stored payment; the receiving account (and the app's own id for it) ride along. */
+export function paymentEvent(payment, account, type = "payment.received") {
+  const data = { ...payment, account: account ? { id: account.id, name: account.name, tenantRef: account.tenantRef } : null };
+  return makeEvent(type, payment.source, data, `evt_${payment.id.replace(/^pay_/, "")}`);
 }
 
-/** Sends what is due. Returns how many were attempted. `fetchImpl` is for tests. */
-export async function deliverDue(store, sources, { fetchImpl = fetch, now = Date.now(), log = () => {} } = {}) {
-  const due = store.dueDeliveries(new Date(now).toISOString());
+/** Queues an event for the app's webhook (nothing when the app has none). */
+export function queueEvent(store, app, event) {
+  if (!app?.webhookUrl) return false;
+  store.deliveries.queue(event.id, app.id, app.webhookUrl, JSON.stringify(event));
+  return true;
+}
+
+/**
+ * Sends what is due, to the app's current webhook URL (so fixing a wrong URL and retrying works) and signed with
+ * its current secret. Returns how many were attempted. `fetchImpl` is for tests.
+ */
+export async function deliverDue(store, { fetchImpl = fetch, now = Date.now(), log = () => {} } = {}) {
+  const due = store.deliveries.due(new Date(now).toISOString());
   await Promise.all(
     due.map(async (d) => {
-      const source = sources.find((s) => s.id === d.source);
-      const hook = source?.webhooks.find((w) => w.url === d.url);
-      if (!hook) {
-        store.markFailedAttempt(d.id, null, "El webhook ya no está en la configuración", null);
+      const app = store.apps.get(d.source);
+      if (!app?.webhookUrl || !app.active) {
+        store.deliveries.markFailedAttempt(d.id, null, app ? "La app no tiene webhook o está inactiva" : "La app ya no existe", null);
         return;
       }
       const nextAt = d.attempts < RETRY_DELAYS_MS.length ? new Date(now + RETRY_DELAYS_MS[d.attempts]).toISOString() : null;
+      const host = (() => {
+        try {
+          return new URL(app.webhookUrl).host;
+        } catch {
+          return app.webhookUrl;
+        }
+      })();
       try {
-        const res = await fetchImpl(d.url, {
+        const res = await fetchImpl(app.webhookUrl, {
           method: "POST",
           redirect: "manual",
           signal: AbortSignal.timeout(10_000),
           headers: {
             "Content-Type": "application/json",
-            "User-Agent": "pagoradar/1",
+            "User-Agent": "pagoradar/2",
             "Pagoradar-Event-Id": d.event_id,
-            "Pagoradar-Signature": signatureHeader(hook.secret, d.body),
+            "Pagoradar-Signature": signatureHeader(store.apps.secret(app.id), d.body),
           },
           body: d.body,
         });
         if (res.status >= 200 && res.status < 300) {
-          store.markDelivered(d.id, res.status);
-          log(`webhook ${d.event_id} -> ${new URL(d.url).host}: ${res.status}`);
+          store.deliveries.markDelivered(d.id, res.status);
+          log(`webhook ${d.event_id} -> ${host}: ${res.status}`);
         } else {
-          store.markFailedAttempt(d.id, res.status, `HTTP ${res.status}`, nextAt);
-          log(`webhook ${d.event_id} -> ${new URL(d.url).host}: HTTP ${res.status}${nextAt ? `, reintento ${nextAt}` : ", sin más reintentos"}`);
+          store.deliveries.markFailedAttempt(d.id, res.status, `HTTP ${res.status}`, nextAt);
+          log(`webhook ${d.event_id} -> ${host}: HTTP ${res.status}${nextAt ? `, reintento ${nextAt}` : ", sin más reintentos"}`);
         }
       } catch (e) {
-        store.markFailedAttempt(d.id, null, e?.name === "TimeoutError" ? "Tiempo de espera agotado" : (e?.message ?? "Error de red"), nextAt);
-        log(`webhook ${d.event_id} -> ${new URL(d.url).host}: ${e?.message ?? e}${nextAt ? `, reintento ${nextAt}` : ", sin más reintentos"}`);
+        store.deliveries.markFailedAttempt(d.id, null, e?.name === "TimeoutError" ? "Tiempo de espera agotado" : (e?.message ?? "Error de red"), nextAt);
+        log(`webhook ${d.event_id} -> ${host}: ${e?.message ?? e}${nextAt ? `, reintento ${nextAt}` : ", sin más reintentos"}`);
       }
     }),
   );
