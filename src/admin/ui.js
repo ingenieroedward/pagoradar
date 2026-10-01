@@ -170,7 +170,17 @@ export function layout({ title, admin = null, csrf = null, active = null, body }
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
-<meta name="theme-color" content="#0a1013">
+<meta name="theme-color" content="#0a1013" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f3f6f7" media="(prefers-color-scheme: light)">
+<meta name="application-name" content="pagoradar">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="pagoradar">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <title>${title} · pagoradar</title>
 <link rel="stylesheet" href="/static/admin.css?v=${ASSET_V}">
 <script src="/static/admin.js?v=${ASSET_V}" defer></script>

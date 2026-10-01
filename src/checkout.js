@@ -24,6 +24,8 @@ function shell(title, body) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <meta name="referrer" content="no-referrer">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png">
 <title>${title}</title>
 <link rel="stylesheet" href="/static/checkout.css?v=${ASSET_V}">
 <script src="/static/checkout.js?v=${ASSET_V}" defer></script>

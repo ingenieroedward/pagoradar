@@ -128,6 +128,12 @@ sitios, cabeceras CSP / `X-Frame-Options`, y un **registro de cambios** de quié
 secretos de webhook y de 2 pasos se guardan **cifrados** con `MASTER_KEY`; las API keys, solo su huella.
 Otro administrador recibe una contraseña temporal y al entrar debe cambiarla y configurar sus 2 pasos.
 
+
+**App instalable (PWA):** en el celular, abre el panel y elige "Agregar a la pantalla de inicio" (Android:
+⋮ → Instalar app; iPhone: Compartir → Agregar a inicio). Abre a pantalla completa con su ícono y accesos
+directos a Pagos, Cobros y Cuentas. El service worker solo guarda estilos e íconos; las páginas con pagos
+siempre vienen del servidor y, sin conexión, se muestra un aviso.
+
 ## 2. Cloudflare: recibir correo y pasarlo al Worker
 
 > Se usa un **subdominio** (`pagos.tudominio.com`) para no tocar el correo del dominio principal.

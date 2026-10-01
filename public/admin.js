@@ -93,3 +93,8 @@ if (filterForm) {
   const pop = filterForm.querySelector("details.pop");
   if (pop) document.addEventListener("click", (e) => { if (pop.open && !pop.contains(e.target)) pop.open = false; });
 }
+
+// Installable app (PWA): the service worker only caches styles and icons, never pages with payment data.
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+}
