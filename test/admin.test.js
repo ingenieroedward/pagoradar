@@ -263,6 +263,25 @@ test("other admins: temporary password, must change it and set up 2-step; audit 
   }
 });
 
+test("charges: pay key on the account, list, cancel", async () => {
+  const b = await loggedIn();
+  const app = store.apps.create({ name: "Cobros SaaS" });
+  const acc = store.accounts.create({ appId: app.id, name: "Caja", ownerEmails: [OWNER], banks: ["nequi"], domain: "pagos.example.com" });
+  await b.req(`/accounts/${acc.id}`);
+  let r = await b.req(`/accounts/${acc.id}`, { method: "POST", form: { _csrf: b.csrf(), name: "Caja", ownerEmails: OWNER, banks: "nequi", tenantRef: "", payKey: "3001234567", payHolder: "Caja Prueba" } });
+  assert.equal(r.location, `/accounts/${acc.id}?ok=saved`);
+  assert.equal(store.accounts.get(acc.id).payKey, "3001234567");
+  const c = store.charges.create({ appId: app.id, accountId: acc.id, baseCents: 1_000_000, amountCents: 1_000_100, description: "Mensualidad", expiresAt: new Date(Date.now() + 600_000).toISOString() });
+  r = await b.req("/charges");
+  assert.match(r.text, /Mensualidad/);
+  assert.match(r.text, /Esperando pago/);
+  assert.match(r.text, new RegExp(`/c/${c.id}`));
+  r = await b.req(`/charges/${c.id}/cancel`, { method: "POST", form: { _csrf: b.csrf() } });
+  assert.equal(r.location, "/charges?ok=canceled");
+  assert.equal(store.charges.get(c.id).status, "canceled");
+  assert.match((await b.req("/charges?status=canceled")).text, /Cancelado/);
+});
+
 test("logout ends the session; security headers on pages; foreign origin refused", async () => {
   const b = await loggedIn();
   const r = await b.req("/");

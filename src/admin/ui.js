@@ -63,6 +63,13 @@ export function accountStatus(status) {
   return badge("Esperando primer aviso", "warn");
 }
 
+export function chargeStatus(status) {
+  if (status === "paid") return badge("Pagado", "ok");
+  if (status === "pending") return badge("Esperando pago", "warn");
+  if (status === "expired") return badge("Vencido", "muted");
+  return badge("Cancelado", "muted");
+}
+
 export const csrfField = (token) => html`<input type="hidden" name="_csrf" value="${token}">`;
 
 export function postButton(action, label, csrf, { tone = "secondary", confirm = null, fields = {} } = {}) {
@@ -84,6 +91,7 @@ const NAV = [
   ["/apps", "Apps"],
   ["/accounts", "Cuentas"],
   ["/payments", "Pagos"],
+  ["/charges", "Cobros"],
   ["/inbox", "Correos"],
   ["/settings", "Ajustes"],
 ];

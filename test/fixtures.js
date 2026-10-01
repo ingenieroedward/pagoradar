@@ -42,13 +42,13 @@ export async function sign(message, domain, { headerList = "From:To:Subject:Date
   return Buffer.from(res.signatures + message);
 }
 
-export const nequiNegociosHtml = ({ amount = "$ 25.000", payer = "ANA MARIA PRUEBA LOPEZ", status = "Aprobada", tx = "abc123def456" } = {}) => `<!DOCTYPE html><html><head><style>.x{color:red}</style></head><body>
+export const nequiNegociosHtml = ({ amount = "$ 25.000", payer = "ANA MARIA PRUEBA LOPEZ", status = "Aprobada", tx = "abc123def456", fecha = "01/10/2026 10:22:53" } = {}) => `<!DOCTYPE html><html><head><style>.x{color:red}</style></head><body>
 <table><tr><td><img alt="NEQUI"></td></tr>
 <tr><td><h1>Venta exitosa por ${amount}</h1></td></tr>
 <tr><td>Detalle de la venta</td></tr>
 <tr><td><b>Monto:</b></td><td>${amount}</td></tr>
 <tr><td><b>Estado:</b></td><td>${status}</td></tr>
-<tr><td><b>Fecha:</b></td><td>01/10/2026 10:22:53</td></tr>
+<tr><td><b>Fecha:</b></td><td>${fecha}</td></tr>
 <tr><td><b>Pagador:</b></td><td>${payer}</td></tr>
 <tr><td><b>Banco:</b></td><td>Banco de Pruebas</td></tr>
 <tr><td><b>Referencia:</b></td><td>M00000001</td></tr>

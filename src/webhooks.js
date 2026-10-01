@@ -23,9 +23,13 @@ export function makeEvent(type, appId, data, id = `evt_${randomBytes(10).toStrin
   return { id, type, createdAt: new Date().toISOString(), source: appId, data };
 }
 
-/** payment.received for a stored payment; the receiving account (and the app's own id for it) ride along. */
-export function paymentEvent(payment, account, type = "payment.received") {
-  const data = { ...payment, account: account ? { id: account.id, name: account.name, tenantRef: account.tenantRef } : null };
+/** payment.received for a stored payment; the receiving account (and the app's own id for it) and the charge it paid ride along. */
+export function paymentEvent(payment, account, charge = null, type = "payment.received") {
+  const data = {
+    ...payment,
+    account: account ? { id: account.id, name: account.name, tenantRef: account.tenantRef } : null,
+    charge: charge ? { id: charge.id, reference: charge.reference } : null,
+  };
   return makeEvent(type, payment.source, data, `evt_${payment.id.replace(/^pay_/, "")}`);
 }
 

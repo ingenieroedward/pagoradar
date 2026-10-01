@@ -3,6 +3,12 @@
   "version": "0.1.0",
   "description": "Lee los avisos de pago de los bancos (Nequi, Bancolombia…) que llegan por correo, verifica que sean auténticos (DKIM) y avisa a tus apps con webhooks firmados.",
   "type": "module",
+  "exports": {
+    "./sdk": {
+      "types": "./sdk/pagoradar.d.ts",
+      "default": "./sdk/pagoradar.js"
+    }
+  },
   "private": true,
   "license": "UNLICENSED",
   "engines": {

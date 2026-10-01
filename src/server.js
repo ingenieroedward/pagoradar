@@ -5,6 +5,7 @@ import { openStore } from "./store.js";
 import { createApp } from "./app.js";
 import { deliverDue } from "./webhooks.js";
 import { importLegacySources } from "./importLegacy.js";
+import { expireCharges } from "./charges.js";
 import { randomToken } from "./security.js";
 
 const config = loadConfig();
@@ -30,12 +31,14 @@ server.listen(config.port, () => {
   log(`pagoradar escuchando en :${config.port} · ${store.apps.list().length} apps · ${store.accounts.list().length} cuentas receptoras`);
 });
 
-// Webhook retries every 15 s; retention once an hour.
+// Expired charges and webhook retries every 15 s; retention once an hour.
 let delivering = false;
 const tick = setInterval(async () => {
   if (delivering) return;
   delivering = true;
   try {
+    const expired = expireCharges(store, { publicUrl: config.publicUrl });
+    if (expired) log(`${expired} cobro(s) vencido(s)`);
     await deliverDue(store, { log });
   } catch (e) {
     log(`error enviando webhooks: ${e?.message ?? e}`);

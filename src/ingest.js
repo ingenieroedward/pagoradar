@@ -1,5 +1,6 @@
 import { createHash, createHmac } from "node:crypto";
 import { analyzeEmail } from "./analyze.js";
+import { matchPayment } from "./charges.js";
 import { safeEqual } from "./security.js";
 import { deliverDue, makeEvent, paymentEvent, queueEvent } from "./webhooks.js";
 
@@ -22,7 +23,7 @@ export function validIngestSignature(secret, headers, raw, now = Date.now()) {
  * One email from the Worker, addressed to `to`. The receiving account is found by that address; its owner
  * emails and banks decide whether the notice counts (see analyze.js). Returns { result, reason?, paymentId? }.
  */
-export async function ingestEmail(store, raw, to, { resolver, log = () => {} } = {}) {
+export async function ingestEmail(store, raw, to, { resolver, publicUrl = null, log = () => {} } = {}) {
   const address = String(to ?? "").trim().toLowerCase();
   const account = store.accounts.byAddress(address);
   const app = account ? store.apps.get(account.appId) : null;
@@ -66,8 +67,10 @@ export async function ingestEmail(store, raw, to, { resolver, log = () => {} } =
     return { result: "duplicate" };
   }
   store.accounts.touchPayment(account.id);
-  queueEvent(store, app, paymentEvent(payment, account));
-  log(`[${app.id}/${account.id}] pago ${payment.id}: ${payment.bank} $${payment.amount.toLocaleString("es-CO")}`);
+  const matched = matchPayment(store, app, account, payment, { publicUrl });
+  queueEvent(store, app, paymentEvent(payment, account, matched?.charge));
+  if (matched) queueEvent(store, app, matched.event);
+  log(`[${app.id}/${account.id}] pago ${payment.id}: ${payment.bank} $${payment.amount.toLocaleString("es-CO")}${matched ? ` · paga el cobro ${matched.charge.id}` : ""}`);
   void deliverDue(store, { log }).catch(() => {});
-  return { result: "accepted", paymentId: payment.id };
+  return { result: "accepted", paymentId: payment.id, chargeId: matched?.charge.id ?? null };
 }
