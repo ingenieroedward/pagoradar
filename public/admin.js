@@ -63,3 +63,33 @@ if (drop) {
 // The "Más" menu closes when tapping outside it.
 const more = document.querySelector("details.more");
 if (more) document.addEventListener("click", (e) => { if (more.open && !more.contains(e.target)) more.open = false; });
+
+// Filter bars submit themselves: on choosing an option, and after a pause while typing in the search box.
+// Empty fields are left out of the URL; the search box keeps the focus across the reload.
+const filterForm = document.querySelector("form[data-autosubmit]");
+if (filterForm) {
+  const search = filterForm.querySelector("input[type=search]");
+  const submit = (keepFocus) => {
+    try { if (keepFocus) sessionStorage.setItem("pr-search-focus", "1"); } catch {}
+    filterForm.requestSubmit();
+  };
+  filterForm.addEventListener("change", (e) => { if (e.target.matches("select")) submit(false); });
+  filterForm.addEventListener("submit", () => {
+    for (const el of filterForm.elements) if (el.name && !el.value) el.disabled = true;
+  });
+  if (search) {
+    let timer;
+    search.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => submit(true), 550); });
+    search.addEventListener("search", () => { if (!search.value) submit(true); });
+    try {
+      if (sessionStorage.getItem("pr-search-focus") === "1") {
+        sessionStorage.removeItem("pr-search-focus");
+        search.focus();
+        search.setSelectionRange(search.value.length, search.value.length);
+      }
+    } catch {}
+  }
+  // The date popover closes when tapping outside it.
+  const pop = filterForm.querySelector("details.pop");
+  if (pop) document.addEventListener("click", (e) => { if (pop.open && !pop.contains(e.target)) pop.open = false; });
+}

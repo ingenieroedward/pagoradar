@@ -866,14 +866,83 @@ async function checkEmail(s, id) {
 
 function paymentFilters(s) {
   const q = s.url.searchParams;
+  const day = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(v ?? "") ? bogotaDayStart(v) : null);
   return {
     appId: q.get("app") || undefined,
     accountId: q.get("account") || undefined,
     bank: q.get("bank") || undefined,
     q: q.get("q")?.trim() || undefined,
-    from: q.get("from") ? bogotaDayStart(q.get("from")) : undefined,
-    to: q.get("to") ? new Date(new Date(bogotaDayStart(q.get("to"))).getTime() + 86400_000).toISOString() : undefined,
+    from: day(q.get("from")) ?? undefined,
+    to: day(q.get("to")) ? new Date(new Date(day(q.get("to"))).getTime() + 86400_000).toISOString() : undefined,
   };
+}
+
+// ---------- the filter bar (Pagos, Cobros): search, pill selects, segmented choices; submits itself on change
+
+/** This page's URL with some query params changed (null removes them); always back to page 1. */
+function withParams(s, changes) {
+  const p = new URLSearchParams(s.url.searchParams);
+  p.delete("page");
+  p.delete("ok");
+  for (const [k, v] of Object.entries(changes)) {
+    if (v === null || v === undefined || v === "") p.delete(k);
+    else p.set(k, String(v));
+  }
+  const qs = p.toString();
+  return `${s.url.pathname}${qs ? `?${qs}` : ""}`;
+}
+
+function pillSelect(name, label, allLabel, options, current) {
+  const value = current ?? "";
+  return html`<label class="pill${value ? " on" : ""}"><select name="${name}" aria-label="${label}">
+    <option value="">${allLabel}</option>
+    ${options.map(([v, l]) => html`<option value="${v}"${v === value ? raw(" selected") : ""}>${l}</option>`)}
+  </select></label>`;
+}
+
+function searchBox(name, placeholder, value) {
+  return html`<div class="search">${icon("search")}<input type="search" name="${name}" value="${value ?? ""}" placeholder="${placeholder}" aria-label="${placeholder}" autocomplete="off"></div>`;
+}
+
+/** Segmented control of links; `items`: [label, href, active, count?]. */
+function segmented(label, items) {
+  return html`<nav class="seg" aria-label="${label}">${items.map(
+    ([text, href, active, count]) =>
+      html`<a href="${href}"${active ? raw(' aria-current="true"') : ""}>${text}${count !== undefined ? html`<span class="seg-n">${count}</span>` : ""}</a>`,
+  )}</nav>`;
+}
+
+const bogotaYmd = (daysAgo = 0) => new Date(Date.now() - BOGOTA_OFFSET_MS - daysAgo * 86400_000).toISOString().slice(0, 10);
+const shortDay = new Intl.DateTimeFormat("es-CO", { day: "numeric", month: "short", timeZone: "UTC" });
+const ymdLabel = (ymd) => shortDay.format(new Date(`${ymd}T12:00:00Z`));
+
+/** Todo / Hoy / 7 días / 30 días, plus a "Rango" popover with two dates (inside the filter form). */
+function dateFilter(s) {
+  const q = s.url.searchParams;
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(q.get("from") ?? "") ? q.get("from") : "";
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(q.get("to") ?? "") ? q.get("to") : "";
+  const today = bogotaYmd();
+  const presets = [["Todo", null], ["Hoy", 0], ["7 días", 6], ["30 días", 29]];
+  const current = !from && !to ? "Todo" : presets.find(([, d]) => d !== null && from === bogotaYmd(d) && to === today)?.[0];
+  const custom = Boolean((from || to) && !current);
+  const label = custom ? (from && to ? (from === to ? ymdLabel(from) : `${ymdLabel(from)} – ${ymdLabel(to)}`) : from ? `Desde ${ymdLabel(from)}` : `Hasta ${ymdLabel(to)}`) : "Rango";
+  return html`${segmented("Fechas", presets.map(([text, d]) => [text, withParams(s, d === null ? { from: null, to: null } : { from: bogotaYmd(d), to: today }), current === text]))}
+    <details class="pop${custom ? " on" : ""}">
+      <summary class="pill-btn">${icon("week")}<span>${label}</span></summary>
+      <div class="pop-body">
+        <label>Desde <input type="date" name="from" value="${from}" max="${today}"></label>
+        <label>Hasta <input type="date" name="to" value="${to}" max="${today}"></label>
+        <button class="btn btn-primary btn-small" type="submit">Aplicar</button>
+      </div>
+    </details>`;
+}
+
+function filterBar(s, { rows }) {
+  const active = [...s.url.searchParams.keys()].some((k) => !["page", "ok"].includes(k) && s.url.searchParams.get(k));
+  return html`<form method="get" class="filterbar" data-autosubmit>
+    ${rows.map((r, i) => html`<div class="fb-row">${r}${i === rows.length - 1 && active ? html`<a class="clear" href="${s.url.pathname}">Limpiar filtros</a>` : ""}</div>`)}
+    <noscript><button class="btn btn-primary btn-small" type="submit">Filtrar</button></noscript>
+  </form>`;
 }
 
 function paymentsPage(s) {
@@ -881,35 +950,34 @@ function paymentsPage(s) {
   const q = s.url.searchParams;
   const pageNo = Math.max(1, Number(q.get("page") ?? 1) || 1);
   const filters = paymentFilters(s);
-  const { total, rows } = store.payments.search({ ...filters, limit: 50, offset: (pageNo - 1) * 50 });
+  const { total, cents, rows } = store.payments.search({ ...filters, limit: 50, offset: (pageNo - 1) * 50 });
   const apps = store.apps.list();
   const accounts = store.accounts.list();
   const appName = Object.fromEntries(apps.map((a) => [a.id, a.name]));
-  const qs = (extra) => {
-    const p = new URLSearchParams(q);
-    for (const [k, v] of Object.entries(extra)) p.set(k, v);
-    return `?${p}`;
-  };
-  const opt = (value, label, current) => html`<option value="${value}"${value === (current ?? "") ? raw(" selected") : ""}>${label}</option>`;
+  const pageLink = (n) => withParams(s, { page: n });
+  const filtered = Object.values(filters).some(Boolean);
   return page(s, {
     title: "Pagos",
     active: "/payments",
     body: html`
-      <div class="head"><div><h1>Pagos</h1><p class="muted">${total} pagos</p></div><a class="btn" href="/payments.csv${qs({})}">Descargar CSV</a></div>
+      <div class="head"><div><h1>Pagos</h1><p class="muted">${total} ${total === 1 ? "pago" : "pagos"} · <b class="sum">${fmtMoney(cents / 100)}</b>${filtered ? " con estos filtros" : ""}</p></div>
+        <a class="btn btn-small" href="/payments.csv${s.url.search}">${icon("download")}<span>CSV</span></a></div>
       ${msg(s)}
-      <form method="get" class="card filters">
-        <label>App <select name="app">${opt("", "Todas", q.get("app"))}${apps.map((a) => opt(a.id, a.name, q.get("app")))}</select></label>
-        <label>Cuenta <select name="account">${opt("", "Todas", q.get("account"))}${accounts.map((a) => opt(a.id, a.name, q.get("account")))}</select></label>
-        <label>Banco <select name="bank">${opt("", "Todos", q.get("bank"))}${BANK_IDS.map((b) => opt(b, BANK_LABEL[b] ?? b, q.get("bank")))}</select></label>
-        <label>Pagador o referencia <input type="search" name="q" value="${q.get("q") ?? ""}"></label>
-        <label>Desde <input type="text" name="from" placeholder="AAAA-MM-DD" pattern="\\d{4}-\\d{2}-\\d{2}" value="${q.get("from") ?? ""}"></label>
-        <label>Hasta <input type="text" name="to" placeholder="AAAA-MM-DD" pattern="\\d{4}-\\d{2}-\\d{2}" value="${q.get("to") ?? ""}"></label>
-        <button class="btn btn-primary" type="submit">Filtrar</button>
-      </form>
-      <div class="card">${paymentsTable(rows, appName, store)}</div>
+      ${filterBar(s, {
+        rows: [
+          html`${searchBox("q", "Buscar pagador o referencia", q.get("q"))}
+            <div class="pills">
+              ${apps.length > 1 ? pillSelect("app", "App", "Todas las apps", apps.map((a) => [a.id, a.name]), q.get("app")) : ""}
+              ${pillSelect("account", "Cuenta", "Todas las cuentas", accounts.map((a) => [a.id, a.name]), q.get("account"))}
+              ${pillSelect("bank", "Banco", "Todos los bancos", BANK_IDS.map((b) => [b, BANK_LABEL[b] ?? b]), q.get("bank"))}
+            </div>`,
+          dateFilter(s),
+        ],
+      })}
+      <div class="card">${rows.length === 0 && filtered ? html`<p class="empty">Ningún pago con estos filtros. <a href="/payments">Ver todos</a></p>` : paymentsTable(rows, appName, store)}</div>
       <div class="row">
-        ${pageNo > 1 ? html`<a class="btn" href="${qs({ page: pageNo - 1 })}">← Anteriores</a>` : ""}
-        ${pageNo * 50 < total ? html`<a class="btn" href="${qs({ page: pageNo + 1 })}">Siguientes →</a>` : ""}
+        ${pageNo > 1 ? html`<a class="btn" href="${pageLink(pageNo - 1)}">← Anteriores</a>` : ""}
+        ${pageNo * 50 < total ? html`<a class="btn" href="${pageLink(pageNo + 1)}">Siguientes →</a>` : ""}
       </div>`,
   });
 }
@@ -937,31 +1005,43 @@ function chargesPage(s) {
   const q = s.url.searchParams;
   const pageNo = Math.max(1, Number(q.get("page") ?? 1) || 1);
   const status = ["pending", "paid", "expired", "canceled"].includes(q.get("status")) ? q.get("status") : undefined;
-  const { total, rows } = store.charges.search({ appId: q.get("app") || undefined, status, limit: 50, offset: (pageNo - 1) * 50 });
+  const filters = { appId: q.get("app") || undefined, accountId: q.get("account") || undefined, q: q.get("q")?.trim() || undefined };
+  const { total, rows } = store.charges.search({ ...filters, status, limit: 50, offset: (pageNo - 1) * 50 });
+  const counts = store.charges.countByStatus(filters);
+  const all = counts.pending + counts.paid + counts.expired + counts.canceled;
   const apps = store.apps.list();
+  const accounts = store.accounts.list();
   const appName = Object.fromEntries(apps.map((a) => [a.id, a.name]));
-  const accountName = Object.fromEntries(store.accounts.list().map((a) => [a.id, a.name]));
-  const qs = (extra) => {
-    const p = new URLSearchParams(q);
-    for (const [k, v] of Object.entries(extra)) p.set(k, v);
-    return `?${p}`;
-  };
-  const opt = (value, label, current) => html`<option value="${value}"${value === (current ?? "") ? raw(" selected") : ""}>${label}</option>`;
+  const accountName = Object.fromEntries(accounts.map((a) => [a.id, a.name]));
+  const pageLink = (n) => withParams(s, { page: n });
   const csrf = s.session.csrf;
+  const tabs = [
+    ["Todos", null, all],
+    ["Esperando pago", "pending", counts.pending],
+    ["Pagados", "paid", counts.paid],
+    ["Vencidos", "expired", counts.expired],
+    ["Cancelados", "canceled", counts.canceled],
+  ];
   return page(s, {
     title: "Cobros",
     active: "/charges",
     body: html`
-      <div class="head"><div><h1>Cobros</h1><p class="muted">${total} cobros. Las apps los crean por API (POST /v1/charges); cada uno tiene un valor único y su página de pago.</p></div></div>
+      <div class="head"><div><h1>Cobros</h1><p class="muted">Las apps los crean por API (POST /v1/charges); cada uno tiene un valor único y su página de pago.</p></div></div>
       ${msg(s)}
-      <form method="get" class="card filters">
-        <label>App <select name="app">${opt("", "Todas", q.get("app"))}${apps.map((a) => opt(a.id, a.name, q.get("app")))}</select></label>
-        <label>Estado <select name="status">${opt("", "Todos", q.get("status"))}${opt("pending", "Esperando pago", q.get("status"))}${opt("paid", "Pagados", q.get("status"))}${opt("expired", "Vencidos", q.get("status"))}${opt("canceled", "Cancelados", q.get("status"))}</select></label>
-        <button class="btn btn-primary" type="submit">Filtrar</button>
-      </form>
+      ${filterBar(s, {
+        rows: [
+          html`${searchBox("q", "Buscar descripción, referencia o cliente", q.get("q"))}
+            <div class="pills">
+              ${apps.length > 1 ? pillSelect("app", "App", "Todas las apps", apps.map((a) => [a.id, a.name]), q.get("app")) : ""}
+              ${pillSelect("account", "Cuenta", "Todas las cuentas", accounts.map((a) => [a.id, a.name]), q.get("account"))}
+            </div>
+            ${status ? html`<input type="hidden" name="status" value="${status}">` : ""}`,
+          segmented("Estado", tabs.map(([text, v, n]) => [text, withParams(s, { status: v }), (status ?? null) === v, n])),
+        ],
+      })}
       <div class="card">
         ${rows.length === 0
-          ? html`<p class="empty">Todavía no hay cobros.</p>`
+          ? html`<p class="empty">${all === 0 && !Object.values(filters).some(Boolean) ? "Todavía no hay cobros." : html`Ningún cobro con estos filtros. <a href="/charges">Ver todos</a>`}</p>`
           : html`<div class="table-wrap"><table>
           <thead><tr><th>Creado</th><th>Cobro</th><th>Cuenta</th><th>Estado</th><th class="num">Valor</th><th></th></tr></thead>
           <tbody>${rows.map((c) => {
@@ -977,8 +1057,8 @@ function chargesPage(s) {
           })}</tbody></table></div>`}
       </div>
       <div class="row">
-        ${pageNo > 1 ? html`<a class="btn" href="${qs({ page: pageNo - 1 })}">← Anteriores</a>` : ""}
-        ${pageNo * 50 < total ? html`<a class="btn" href="${qs({ page: pageNo + 1 })}">Siguientes →</a>` : ""}
+        ${pageNo > 1 ? html`<a class="btn" href="${pageLink(pageNo - 1)}">← Anteriores</a>` : ""}
+        ${pageNo * 50 < total ? html`<a class="btn" href="${pageLink(pageNo + 1)}">Siguientes →</a>` : ""}
       </div>`,
   });
 }
