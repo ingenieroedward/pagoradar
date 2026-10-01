@@ -242,7 +242,14 @@ cliente ──paga 25.001 por Bre-B──▶ banco ──aviso──▶ pagorada
 pesos (`uniqueAmount: "up"`, por defecto), **menos** (`"down"`, un pequeño descuento) o exacto
 (`"off"`; entonces, si hay varios iguales, decide `payerName`). Nunca se usa el valor redondo, así
 un pago de $25.000 que no es de ningún cobro no salda nada por error. El aviso que trae exactamente
-ese valor, hecho mientras el cobro estaba abierto, lo paga.
+ese valor, hecho mientras el cobro estaba abierto, lo paga (`match: "exact"`).
+
+**Si el cliente paga el valor redondo** ($25.000 en vez de $25.001): si en esa cuenta hay **un solo**
+cobro abierto que pidió $25.000, se paga igual (`match: "approximate"`, `paidAmount: 25000`). Si hay
+varios, decide el titular esperado (`payerName`); si aun así no se puede saber, no se adivina: el pago
+llega como `payment.received` sin cobro y se asocia a mano, desde el panel (**Pagos → Asociar a un
+cobro**, que muestra los cobros de esa cuenta del valor más parecido al menos) o por API
+(`match: "manual"`). Nunca se aprueba un cobro equivocado.
 
 | | |
 |---|---|
@@ -250,13 +257,13 @@ ese valor, hecho mientras el cobro estaba abierto, lo paga.
 | `GET /v1/charges?status=&reference=&account=&tenantRef=` | Los cobros de la app (`{ charges, total }`) |
 | `GET /v1/charges/<id>` | Uno: `status` `pending` → `paid` / `expired` / `canceled`, `paymentId`, `paidAt` |
 | `POST /v1/charges/<id>/cancel` | Lo cancela (solo si está pendiente) y libera su valor |
-| `POST /v1/charges/<id>/pay` | `{ "paymentId": "pay_…" }`: asociar a mano un pago que llegó con otro valor |
+| `POST /v1/charges/<id>/pay` | `{ "paymentId": "pay_…" }`: asociar a mano un pago que llegó con otro valor (también a un cobro vencido o cancelado) |
 
 - En vez de `account` puedes mandar `tenantRef`: usa la cuenta de ese cliente.
 - `amount` en pesos enteros; `expiresInMinutes` de 5 a 10080 (30 por defecto). `reference` es tu id
   de pedido: única por app, y crear otra vez con la misma devuelve el mismo cobro (reintentos seguros).
 - El cobro trae `amount` (lo que debe pagar), `baseAmount` (lo pedido), `adjustment`, `checkoutUrl`
-  y `payTo` (`key`, `holder`, `banks`).
+  y `payTo` (`key`, `holder`, `banks`); ya pagado, `match` y `paidAmount` (lo que trajo el pago).
 - **Página de pago** (`/c/<id>`, pública, sin datos privados): valor con botón Copiar, la **llave
   Bre-B** y el titular de la cuenta (`payKey` / `payHolder`, desde el panel o
   `PATCH /v1/accounts/<id>`), cuenta regresiva y el estado, que se actualiza solo. Al pagarse vuelve a

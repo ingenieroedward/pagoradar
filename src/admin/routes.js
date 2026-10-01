@@ -6,7 +6,7 @@ import { clientIp, cookie, list, parseCookies, parseForm, rateLimiter, readBody,
 import { hashPassword, newTotpSecret, randomToken, safeEqual, totpUri, verifyPassword, verifyTotp } from "../security.js";
 import { sendTestEvent } from "../api.js";
 import { deliverDue } from "../webhooks.js";
-import { expireCharges } from "../charges.js";
+import { expireCharges, payManually } from "../charges.js";
 import {
   BANK_LABEL,
   REASON_LABEL,
@@ -47,6 +47,7 @@ const MESSAGES = {
   password: "Contraseña cambiada.",
   "totp-reset": "Configura de nuevo tu app autenticadora.",
   canceled: "Cobro cancelado.",
+  linked: "Pago asociado al cobro: se avisó a la app.",
 };
 
 // ---------- helpers
@@ -168,6 +169,7 @@ export async function handleAdmin(req, res, url, ctx) {
   if ((m = path.match(/^\/accounts\/([\w-]+)\/check$/)) && method === "POST") return checkEmail(s, m[1]);
   if (path === "/payments" && method === "GET") return paymentsPage(s);
   if (path === "/payments.csv" && method === "GET") return paymentsCsv(s);
+  if ((m = path.match(/^\/payments\/(pay_[\w]+)\/link$/))) return method === "POST" ? linkPayment(s, m[1]) : linkPaymentPage(s, m[1]);
   if (path === "/charges" && method === "GET") return chargesPage(s);
   if ((m = path.match(/^\/charges\/(chg_[a-z0-9]+)\/cancel$/)) && method === "POST") return cancelCharge(s, m[1]);
   if (path === "/inbox" && method === "GET") return inboxPage(s);
@@ -416,7 +418,7 @@ function paymentsTable(rows, appName, store) {
   if (rows.length === 0) return html`<p class="empty">Todavía no hay pagos.</p>`;
   const accountName = Object.fromEntries(store.accounts.list().map((a) => [a.id, a.name]));
   return html`<div class="table-wrap"><table>
-    <thead><tr><th>Fecha</th><th>Pagador</th><th>Banco</th><th>Cuenta</th><th>App</th><th class="num">Valor</th></tr></thead>
+    <thead><tr><th>Fecha</th><th>Pagador</th><th>Banco</th><th>Cuenta</th><th>App</th><th>Cobro</th><th class="num">Valor</th></tr></thead>
     <tbody>${rows.map(
       (p) => html`<tr>
         <td>${fmtDate(p.paidAt)}</td>
@@ -424,9 +426,72 @@ function paymentsTable(rows, appName, store) {
         <td>${BANK_LABEL[p.bank] ?? p.bank}${p.reference ? html`<div class="muted small">Ref. ${p.reference}</div>` : ""}</td>
         <td>${p.accountId ? html`<a href="/accounts/${p.accountId}">${accountName[p.accountId] ?? p.accountId}</a>` : "—"}</td>
         <td>${appName[p.appId] ?? p.appId}</td>
+        <td>${chargeCell(p, store)}</td>
         <td class="num">${fmtMoney(p.amount)}</td>
       </tr>`,
     )}</tbody></table></div>`;
+}
+
+const MATCH_LABEL = { exact: "valor exacto", approximate: "pagó el valor redondo", manual: "asociado a mano" };
+
+function chargeCell(p, store) {
+  const c = store.charges.byPayment(p.id);
+  if (c) {
+    return html`${badge("Pagó un cobro", "ok")}<div class="muted small">${c.description ?? c.reference ?? c.id}${c.match ? ` · ${MATCH_LABEL[c.match] ?? c.match}` : ""}</div>`;
+  }
+  if (p.accountId && store.charges.countLinkable(p.accountId) > 0) return html`<a href="/payments/${p.id}/link">Asociar a un cobro</a>`;
+  return "—";
+}
+
+function linkPaymentPage(s, id, { error = null } = {}) {
+  const { store } = s.ctx;
+  const p = store.payments.get(id);
+  if (!p) return page(s, { title: "No encontrado", body: html`<div class="card">Pago no encontrado.</div>`, status: 404 });
+  const linked = store.charges.byPayment(p.id);
+  const options = p.accountId && !linked ? store.charges.linkable(p.accountId, p.amountCents) : [];
+  const csrf = s.session.csrf;
+  return page(s, {
+    title: "Asociar a un cobro",
+    active: "/payments",
+    status: error ? 400 : 200,
+    body: html`
+      <div class="head"><div><h1>Asociar a un cobro</h1><p class="muted">Para un pago que llegó con otro valor o que el cruce automático no pudo decidir.</p></div><a href="/payments">← Pagos</a></div>
+      ${flash(error, "bad")}
+      <div class="card">
+        <h2>${fmtMoney(p.amount)} de ${p.payerName ?? "?"}</h2>
+        <p class="muted">${BANK_LABEL[p.bank] ?? p.bank} · ${fmtDate(p.paidAt)}${p.reference ? ` · Ref. ${p.reference}` : ""}</p>
+      </div>
+      <div class="card">
+        ${linked
+          ? html`<p>Este pago ya está asociado a un cobro (${linked.description ?? linked.reference ?? linked.id}).</p>`
+          : options.length === 0
+            ? html`<p class="empty">No hay cobros abiertos o recientes en esta cuenta.</p>`
+            : html`<p class="muted small">Cobros abiertos, o vencidos/cancelados en los últimos 7 días, del más parecido en valor al menos parecido. La app recibe charge.paid.</p>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Creado</th><th>Cobro</th><th>Estado</th><th class="num">Valor</th><th></th></tr></thead>
+            <tbody>${options.map((c) => html`<tr>
+              <td>${fmtDate(c.createdAt)}</td>
+              <td>${c.description ?? "—"}${c.reference ? html`<div class="muted small">Ref. ${c.reference}</div>` : ""}${c.payerName ? html`<div class="muted small">Espera a ${c.payerName}</div>` : ""}</td>
+              <td>${chargeStatus(c.status)}</td>
+              <td class="num"><b>${fmtMoney(c.amount)}</b>${c.amount !== c.baseAmount ? html`<div class="muted small">pedido ${fmtMoney(c.baseAmount)}</div>` : ""}</td>
+              <td>${postButton(`/payments/${p.id}/link`, "Asociar", csrf, { tone: "primary", fields: { chargeId: c.id }, confirm: `¿Asociar este pago de ${fmtMoney(p.amount)} al cobro de ${fmtMoney(c.amount)}?` })}</td>
+            </tr>`)}</tbody></table></div>`}
+      </div>`,
+  });
+}
+
+function linkPayment(s, id) {
+  const { store, config } = s.ctx;
+  const p = store.payments.get(id);
+  const charge = store.charges.get(String(s.form.chargeId ?? ""));
+  if (!p || !charge) return redirect(s.res, "/payments");
+  if (charge.accountId !== p.accountId) return linkPaymentPage(s, id, { error: "Ese cobro es de otra cuenta receptora." });
+  if (store.charges.byPayment(p.id)) return linkPaymentPage(s, id, { error: "Este pago ya está asociado a otro cobro." });
+  const app = store.apps.get(charge.appId);
+  if (!app || !payManually(store, app, charge, p, { publicUrl: config.publicUrl })) return linkPaymentPage(s, id, { error: "Ese cobro ya está pagado." });
+  s.audit("Asoció un pago a un cobro", charge.id, `${p.id} · ${fmtMoney(p.amount)}`);
+  void deliverDue(store, { log: s.ctx.log }).catch(() => {});
+  return redirect(s.res, "/payments?ok=linked");
 }
 
 // ---------- apps
@@ -826,6 +891,7 @@ function paymentsPage(s) {
     active: "/payments",
     body: html`
       <div class="head"><div><h1>Pagos</h1><p class="muted">${total} pagos</p></div><a class="btn" href="/payments.csv${qs({})}">Descargar CSV</a></div>
+      ${msg(s)}
       <form method="get" class="card filters">
         <label>App <select name="app">${opt("", "Todas", q.get("app"))}${apps.map((a) => opt(a.id, a.name, q.get("app")))}</select></label>
         <label>Cuenta <select name="account">${opt("", "Todas", q.get("account"))}${accounts.map((a) => opt(a.id, a.name, q.get("account")))}</select></label>

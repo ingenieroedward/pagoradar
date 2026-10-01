@@ -70,6 +70,10 @@ export interface Charge {
   checkoutUrl: string;
   returnUrl: string | null;
   paymentId: string | null;
+  /** How it got paid: the unique amount, the round amount asked for (only one charge asked it), or linked by hand. */
+  match: "exact" | "approximate" | "manual" | null;
+  /** What the payment brought (may differ from `amount` when match is "approximate" or "manual"). */
+  paidAmount: number | null;
   createdAt: string;
   expiresAt: string;
   paidAt: string | null;
