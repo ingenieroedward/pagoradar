@@ -43,7 +43,8 @@ export function createApp({ config, store, resolver, log = console.log }) {
 
     if (result.reason === "gmail_forwarding_confirmation") {
       store.addInbox({ source: source?.id, reason: result.reason, from: result.from, subject: result.subject, code: result.code, snippet: result.text });
-      log(`Gmail pide confirmar el reenvío hacia ${to}. Código: ${result.code ?? "(míralo en /admin/inbox)"}`);
+      log(`Gmail pide confirmar el reenvío hacia ${to}. Código: ${result.code ?? "(no se encontró)"} · Asunto: ${result.subject}`);
+      if (result.link) log(`…o abre este enlace para confirmarlo: ${result.link}`);
       return send(res, 200, { result: "rejected", reason: result.reason });
     }
     if (!source) {
