@@ -132,6 +132,35 @@ CREATE TABLE audit (
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `;
 
+// v3: charges (an amount the app asks a customer to pay, matched to the bank notice) and how to pay an account.
+const V3 = `
+ALTER TABLE accounts ADD COLUMN pay_key TEXT;
+ALTER TABLE accounts ADD COLUMN pay_holder TEXT;
+CREATE TABLE charges (
+  id TEXT PRIMARY KEY,
+  app_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  base_cents INTEGER NOT NULL,
+  amount_cents INTEGER NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'COP',
+  description TEXT,
+  reference TEXT,
+  payer_name TEXT,
+  metadata TEXT,
+  return_url TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  payment_id TEXT UNIQUE,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  paid_at TEXT,
+  canceled_at TEXT
+);
+CREATE INDEX charges_open ON charges (account_id, status, amount_cents);
+CREATE INDEX charges_app ON charges (app_id, created_at);
+CREATE INDEX charges_due ON charges (status, expires_at);
+CREATE UNIQUE INDEX charges_app_reference ON charges (app_id, reference) WHERE reference IS NOT NULL;
+`;
+
 export const newId = (prefix) => `${prefix}_${Date.now().toString(36)}${randomBytes(8).toString("hex")}`;
 const now = () => new Date().toISOString();
 const json = (v, fallback) => {
@@ -149,11 +178,12 @@ export function openStore(path, { masterKey } = {}) {
   db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
   db.exec(V1);
   const version = db.prepare("PRAGMA user_version").get().user_version;
-  if (version < 2) {
+  for (const [v, sql] of [[2, V2], [3, V3]]) {
+    if (version >= v) continue;
     db.exec("BEGIN");
     try {
-      db.exec(V2);
-      db.exec("PRAGMA user_version = 2");
+      db.exec(sql);
+      db.exec(`PRAGMA user_version = ${v}`);
       db.exec("COMMIT");
     } catch (e) {
       db.exec("ROLLBACK");
@@ -255,6 +285,8 @@ export function openStore(path, { masterKey } = {}) {
       confirmationAt: r.confirmation_at,
       lastEmailAt: r.last_email_at,
       lastPaymentAt: r.last_payment_at,
+      payKey: r.pay_key,
+      payHolder: r.pay_holder,
       createdAt: r.created_at,
     };
   const accounts = {
@@ -291,15 +323,17 @@ export function openStore(path, { masterKey } = {}) {
       );
       return accounts.get(id);
     },
-    update(id, { name, ownerEmails, banks, tenantRef }) {
+    update(id, { name, ownerEmails, banks, tenantRef, payKey, payHolder }) {
       const cur = one("SELECT * FROM accounts WHERE id = ?", id);
       if (!cur) return null;
       run(
-        "UPDATE accounts SET name = ?, owner_emails = ?, banks = ?, tenant_ref = ? WHERE id = ?",
+        "UPDATE accounts SET name = ?, owner_emails = ?, banks = ?, tenant_ref = ?, pay_key = ?, pay_holder = ? WHERE id = ?",
         name ?? cur.name,
         ownerEmails ? JSON.stringify(ownerEmails.map((e) => e.trim().toLowerCase())) : cur.owner_emails,
         banks ? JSON.stringify(banks) : cur.banks,
         tenantRef === undefined ? cur.tenant_ref : tenantRef,
+        payKey === undefined ? cur.pay_key : payKey,
+        payHolder === undefined ? cur.pay_holder : payHolder,
         id,
       );
       return accounts.get(id);
@@ -313,7 +347,11 @@ export function openStore(path, { masterKey } = {}) {
       return run("UPDATE accounts SET status = 'active' WHERE id = ? AND status = 'pending'", id).changes === 1;
     },
     touchPayment: (id) => run("UPDATE accounts SET last_payment_at = ? WHERE id = ?", now(), id),
-    remove: (id) => run("DELETE FROM accounts WHERE id = ?", id).changes === 1,
+    remove(id) {
+      // Its open charges can't be paid anymore.
+      run("UPDATE charges SET status = 'canceled', canceled_at = ? WHERE account_id = ? AND status = 'pending'", now(), id);
+      return run("DELETE FROM accounts WHERE id = ?", id).changes === 1;
+    },
   };
 
   // ---------- payments (`source` = app id)
@@ -369,6 +407,105 @@ export function openStore(path, { masterKey } = {}) {
       };
     },
     stats: (sinceIso) => one("SELECT COUNT(*) AS n, COALESCE(SUM(amount_cents), 0) AS cents FROM payments WHERE received_at >= ?", sinceIso),
+  };
+
+  // ---------- charges: an amount an app asks its customer to pay into one of its accounts
+  const toCharge = (r) =>
+    r && {
+      id: r.id,
+      appId: r.app_id,
+      accountId: r.account_id,
+      baseAmount: r.base_cents / 100,
+      amount: r.amount_cents / 100,
+      amountCents: r.amount_cents,
+      currency: r.currency,
+      description: r.description,
+      reference: r.reference,
+      payerName: r.payer_name,
+      metadata: r.metadata ? json(r.metadata, null) : null,
+      returnUrl: r.return_url,
+      status: r.status,
+      paymentId: r.payment_id,
+      createdAt: r.created_at,
+      expiresAt: r.expires_at,
+      paidAt: r.paid_at,
+      canceledAt: r.canceled_at,
+    };
+  const charges = {
+    get: (id) => toCharge(one("SELECT * FROM charges WHERE id = ?", id)),
+    byReference: (appId, reference) => toCharge(one("SELECT * FROM charges WHERE app_id = ? AND reference = ?", appId, reference)),
+    byPayment: (paymentId) => toCharge(one("SELECT * FROM charges WHERE payment_id = ?", paymentId)),
+    /** Amounts (cents) an account can't hand out now: open charges, and ones that expired in the last `graceMs` (a late notice may still come). */
+    takenAmounts: (accountId, at, graceMs) =>
+      new Set(
+        all(
+          "SELECT amount_cents FROM charges WHERE account_id = ? AND (status = 'pending' OR (status = 'expired' AND expires_at > ?))",
+          accountId,
+          new Date(new Date(at).getTime() - graceMs).toISOString(),
+        ).map((r) => r.amount_cents),
+      ),
+    create(c) {
+      // Unguessable: the id is also the public checkout link.
+      const id = `chg_${randomCode(24)}`;
+      run(
+        `INSERT INTO charges (id, app_id, account_id, base_cents, amount_cents, currency, description, reference, payer_name, metadata, return_url, created_at, expires_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        id,
+        c.appId,
+        c.accountId,
+        c.baseCents,
+        c.amountCents,
+        c.currency ?? "COP",
+        c.description ?? null,
+        c.reference ?? null,
+        c.payerName ?? null,
+        c.metadata ? JSON.stringify(c.metadata) : null,
+        c.returnUrl ?? null,
+        c.createdAt ?? now(),
+        c.expiresAt,
+      );
+      return charges.get(id);
+    },
+    /** Charges of an account that a payment of `amountCents` made at `paidAt` could be paying (open, or expired just before it). */
+    candidates: (accountId, amountCents, paidAt, slackMs) => {
+      const t = new Date(paidAt).getTime();
+      return all(
+        "SELECT * FROM charges WHERE account_id = ? AND amount_cents = ? AND status IN ('pending','expired') AND created_at <= ? AND expires_at >= ? ORDER BY created_at",
+        accountId,
+        amountCents,
+        new Date(t + slackMs).toISOString(),
+        new Date(t - slackMs).toISOString(),
+      ).map(toCharge);
+    },
+    /** Links the payment; false when the charge was already settled or the payment already pays another charge. */
+    markPaid(id, paymentId, at = now()) {
+      try {
+        return run("UPDATE charges SET status = 'paid', payment_id = ?, paid_at = ? WHERE id = ? AND status IN ('pending','expired')", paymentId, at, id).changes === 1;
+      } catch {
+        return false; // payment_id is UNIQUE
+      }
+    },
+    cancel: (id, at = now()) => run("UPDATE charges SET status = 'canceled', canceled_at = ? WHERE id = ? AND status = 'pending'", at, id).changes === 1,
+    /** Marks overdue open charges expired and returns them. */
+    expireDue(at = now()) {
+      const due = all("SELECT * FROM charges WHERE status = 'pending' AND expires_at <= ?", at);
+      for (const r of due) run("UPDATE charges SET status = 'expired' WHERE id = ? AND status = 'pending'", r.id);
+      return due.map((r) => ({ ...toCharge(r), status: "expired" }));
+    },
+    search({ appId, accountId, status, reference, tenantRef, limit = 50, offset = 0 } = {}) {
+      const where = [];
+      const args = [];
+      if (appId) where.push("c.app_id = ?"), args.push(appId);
+      if (accountId) where.push("c.account_id = ?"), args.push(accountId);
+      if (status) where.push("c.status = ?"), args.push(status);
+      if (reference) where.push("c.reference = ?"), args.push(reference);
+      if (tenantRef) where.push("a.tenant_ref = ?"), args.push(tenantRef);
+      const sql = `FROM charges c LEFT JOIN accounts a ON a.id = c.account_id ${where.length ? `WHERE ${where.join(" AND ")}` : ""}`;
+      return {
+        total: one(`SELECT COUNT(*) AS n ${sql}`, ...args).n,
+        rows: all(`SELECT c.* ${sql} ORDER BY c.created_at DESC LIMIT ? OFFSET ?`, ...args, Math.min(Math.max(1, limit), 500), offset).map(toCharge),
+      };
+    },
   };
 
   // ---------- webhook deliveries (`source` = app id)
@@ -527,6 +664,7 @@ export function openStore(path, { masterKey } = {}) {
     keys,
     accounts,
     payments,
+    charges,
     deliveries,
     inbox,
     admins,
@@ -538,6 +676,7 @@ export function openStore(path, { masterKey } = {}) {
       run("DELETE FROM inbox WHERE received_at < ?", ago(7));
       run("DELETE FROM deliveries WHERE status != 'pending' AND created_at < ?", ago(30));
       run("DELETE FROM payments WHERE received_at < ?", ago(paymentDays));
+      run("DELETE FROM charges WHERE status != 'pending' AND created_at < ?", ago(paymentDays));
       run("DELETE FROM sessions WHERE expires_at < ?", new Date(at).toISOString());
       run("DELETE FROM audit WHERE at < ?", ago(365));
     },

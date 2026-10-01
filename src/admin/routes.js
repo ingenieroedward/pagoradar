@@ -6,11 +6,13 @@ import { clientIp, cookie, list, parseCookies, parseForm, rateLimiter, readBody,
 import { hashPassword, newTotpSecret, randomToken, safeEqual, totpUri, verifyPassword, verifyTotp } from "../security.js";
 import { sendTestEvent } from "../api.js";
 import { deliverDue } from "../webhooks.js";
+import { expireCharges } from "../charges.js";
 import {
   BANK_LABEL,
   REASON_LABEL,
   accountStatus,
   badge,
+  chargeStatus,
   copyable,
   csrfField,
   flash,
@@ -44,6 +46,7 @@ const MESSAGES = {
   deleted: "Eliminado.",
   password: "Contraseña cambiada.",
   "totp-reset": "Configura de nuevo tu app autenticadora.",
+  canceled: "Cobro cancelado.",
 };
 
 // ---------- helpers
@@ -165,6 +168,8 @@ export async function handleAdmin(req, res, url, ctx) {
   if ((m = path.match(/^\/accounts\/([\w-]+)\/check$/)) && method === "POST") return checkEmail(s, m[1]);
   if (path === "/payments" && method === "GET") return paymentsPage(s);
   if (path === "/payments.csv" && method === "GET") return paymentsCsv(s);
+  if (path === "/charges" && method === "GET") return chargesPage(s);
+  if ((m = path.match(/^\/charges\/(chg_[a-z0-9]+)\/cancel$/)) && method === "POST") return cancelCharge(s, m[1]);
   if (path === "/inbox" && method === "GET") return inboxPage(s);
   if (path === "/settings") return method === "POST" ? saveSettings(s) : settingsPage(s);
   if (path === "/settings/admins" && method === "POST") return createAdmin(s);
@@ -658,6 +663,8 @@ function readAccountForm(s) {
     ownerEmails: String(s.form.ownerEmails ?? ""),
     banks: list(s.form.banks).filter((b) => BANK_IDS.includes(b)),
     tenantRef: String(s.form.tenantRef ?? "").trim(),
+    payKey: String(s.form.payKey ?? "").trim().slice(0, 80),
+    payHolder: String(s.form.payHolder ?? "").trim().slice(0, 80),
   };
   const emails = parseEmails(values.ownerEmails);
   let error = null;
@@ -726,6 +733,8 @@ function accountPage(s, id, { error = null } = {}) {
             <label>Correos donde el banco avisa <textarea name="ownerEmails" required>${a.ownerEmails.join("\n")}</textarea></label>
             <div><b class="small">Bancos</b>${bankChecks(a.banks)}</div>
             <label>Id del cliente en tu app <input type="text" name="tenantRef" value="${a.tenantRef ?? ""}" maxlength="120"></label>
+            <label>Llave Bre-B para cobros <span class="hint">Opcional: la que ven los clientes en la página de pago (celular, @llave, correo…).</span><input type="text" name="payKey" value="${a.payKey ?? ""}" maxlength="80"></label>
+            <label>Titular que ven los clientes <input type="text" name="payHolder" value="${a.payHolder ?? ""}" maxlength="80"></label>
             <button class="btn btn-primary" type="submit">Guardar</button>
           </form>
           <div class="row mt">
@@ -750,7 +759,7 @@ function updateAccount(s, id) {
   if (!store.accounts.get(id)) return redirect(s.res, "/accounts");
   const { values, emails, error } = readAccountForm(s);
   if (error) return accountPage(s, id, { error });
-  store.accounts.update(id, { name: values.name, ownerEmails: emails, banks: values.banks, tenantRef: values.tenantRef || null });
+  store.accounts.update(id, { name: values.name, ownerEmails: emails, banks: values.banks, tenantRef: values.tenantRef || null, payKey: values.payKey || null, payHolder: values.payHolder || null });
   s.audit("Editó la cuenta receptora", id, `${values.name} · ${emails.join(", ")} · ${values.banks.join(", ")}`);
   return redirect(s.res, `/accounts/${id}?ok=saved`);
 }
@@ -847,6 +856,66 @@ function paymentsCsv(s) {
   s.audit("Descargó pagos en CSV", null, `${rows.length} filas`);
   s.res.writeHead(200, { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": 'attachment; filename="pagos.csv"', "Cache-Control": "no-store" });
   return s.res.end("﻿" + lines.join("\n"));
+}
+
+// ---------- charges
+
+function chargesPage(s) {
+  const { store, config } = s.ctx;
+  if (expireCharges(store, { publicUrl: config.publicUrl })) void deliverDue(store, { log: s.ctx.log }).catch(() => {});
+  const q = s.url.searchParams;
+  const pageNo = Math.max(1, Number(q.get("page") ?? 1) || 1);
+  const status = ["pending", "paid", "expired", "canceled"].includes(q.get("status")) ? q.get("status") : undefined;
+  const { total, rows } = store.charges.search({ appId: q.get("app") || undefined, status, limit: 50, offset: (pageNo - 1) * 50 });
+  const apps = store.apps.list();
+  const appName = Object.fromEntries(apps.map((a) => [a.id, a.name]));
+  const accountName = Object.fromEntries(store.accounts.list().map((a) => [a.id, a.name]));
+  const qs = (extra) => {
+    const p = new URLSearchParams(q);
+    for (const [k, v] of Object.entries(extra)) p.set(k, v);
+    return `?${p}`;
+  };
+  const opt = (value, label, current) => html`<option value="${value}"${value === (current ?? "") ? raw(" selected") : ""}>${label}</option>`;
+  const csrf = s.session.csrf;
+  return page(s, {
+    title: "Cobros",
+    active: "/charges",
+    body: html`
+      <div class="head"><div><h1>Cobros</h1><p class="muted">${total} cobros. Las apps los crean por API (POST /v1/charges); cada uno tiene un valor único y su página de pago.</p></div></div>
+      ${msg(s)}
+      <form method="get" class="card filters">
+        <label>App <select name="app">${opt("", "Todas", q.get("app"))}${apps.map((a) => opt(a.id, a.name, q.get("app")))}</select></label>
+        <label>Estado <select name="status">${opt("", "Todos", q.get("status"))}${opt("pending", "Esperando pago", q.get("status"))}${opt("paid", "Pagados", q.get("status"))}${opt("expired", "Vencidos", q.get("status"))}${opt("canceled", "Cancelados", q.get("status"))}</select></label>
+        <button class="btn btn-primary" type="submit">Filtrar</button>
+      </form>
+      <div class="card">
+        ${rows.length === 0
+          ? html`<p class="empty">Todavía no hay cobros.</p>`
+          : html`<div class="table-wrap"><table>
+          <thead><tr><th>Creado</th><th>Cobro</th><th>Cuenta</th><th>Estado</th><th class="num">Valor</th><th></th></tr></thead>
+          <tbody>${rows.map((c) => {
+            const payment = c.paymentId ? store.payments.get(c.paymentId) : null;
+            return html`<tr>
+              <td>${fmtDate(c.createdAt)}<div class="muted small">vence ${fmtDate(c.expiresAt)}</div></td>
+              <td>${c.description ?? "—"}${c.reference ? html`<div class="muted small">Ref. ${c.reference}</div>` : ""}<div class="muted small">${appName[c.appId] ?? c.appId}</div></td>
+              <td><a href="/accounts/${c.accountId}">${accountName[c.accountId] ?? c.accountId}</a></td>
+              <td>${chargeStatus(c.status)}${payment ? html`<div class="muted small">${payment.payerName} · ${fmtDate(payment.paidAt)}</div>` : ""}</td>
+              <td class="num"><b>${fmtMoney(c.amount)}</b>${c.amount !== c.baseAmount ? html`<div class="muted small">pedido ${fmtMoney(c.baseAmount)}</div>` : ""}</td>
+              <td><a href="/c/${c.id}" target="_blank" rel="noopener">Página de pago</a>${c.status === "pending" ? html`<div class="mt">${postButton(`/charges/${c.id}/cancel`, "Cancelar", csrf, { tone: "danger", confirm: "¿Cancelar este cobro? Su página de pago dirá que fue cancelado." })}</div>` : ""}</td>
+            </tr>`;
+          })}</tbody></table></div>`}
+      </div>
+      <div class="row">
+        ${pageNo > 1 ? html`<a class="btn" href="${qs({ page: pageNo - 1 })}">← Anteriores</a>` : ""}
+        ${pageNo * 50 < total ? html`<a class="btn" href="${qs({ page: pageNo + 1 })}">Siguientes →</a>` : ""}
+      </div>`,
+  });
+}
+
+function cancelCharge(s, id) {
+  const { store } = s.ctx;
+  if (store.charges.cancel(id)) s.audit("Canceló un cobro", id);
+  return redirect(s.res, "/charges?ok=canceled");
 }
 
 function inboxTable(rows) {

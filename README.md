@@ -9,6 +9,10 @@ un **panel web** (con contraseña y código de 2 pasos): cada proyecto es una **
 sus API keys, y cada cuenta bancaria es una **cuenta receptora** con su propia dirección. Tus apps
 nunca tocan tu correo.
 
+Y funciona como **pasarela**: tu app crea un **cobro** (`POST /v1/charges`), manda a su cliente a la
+**página de pago** de pagoradar y recibe `charge.paid` cuando el banco confirma. Sin comisiones: el
+dinero llega directo a tu cuenta por Bre-B.
+
 ```
 Banco ──correo──▶ tu Gmail ──filtro de reenvío──▶ pagos-xxxx@pagos.tudominio.com
                                                          │  Cloudflare Email Routing
@@ -196,7 +200,9 @@ nuevo), `not_approved`, `unknown_address`, `account_disabled`, `ambiguous_header
   - `payment.test`: el evento de prueba (no lo tomes como pago real);
   - `account.confirmation_code`: llegó el código de Gmail de una cuenta (`data.code`, `data.link`),
     para mostrárselo a tu cliente;
-  - `account.activated`: llegó el primer aviso válido de una cuenta.
+  - `account.activated`: llegó el primer aviso válido de una cuenta;
+  - `charge.paid` / `charge.expired`: un cobro se pagó o venció (ver "Cobros"). En `payment.received`,
+    `data.charge` (`{ id, reference }` o `null`) dice si ese pago saldó un cobro.
 - `method`: `breb_qr`, `breb`, `transfer` u `other`. `accountHint`: la cuenta que recibió (`*0000`)
   cuando el banco la dice.
 - Cabeceras: `Pagoradar-Event-Id` (el mismo `id`; úsalo para no procesar dos veces) y
@@ -219,7 +225,66 @@ export function verifyPagoradar(secret, header, rawBody, toleranceSec = 300) {
 }
 ```
 
-Usa el **cuerpo crudo** (antes de `JSON.parse`).
+Usa el **cuerpo crudo** (antes de `JSON.parse`). Con el SDK es `constructEvent(rawBody, header, secret)`.
+
+### Cobros (pasarela)
+
+Tu app pide un valor a su cliente y pagoradar lo reconoce solo cuando llega el aviso del banco:
+
+```
+tu app ──POST /v1/charges──▶ pagoradar  →  { amount: 25001, checkoutUrl: "https://pagoradar…/c/chg_…" }
+cliente ──abre checkoutUrl──▶ ve el valor exacto, la llave Bre-B y "Esperando tu pago…"
+cliente ──paga 25.001 por Bre-B──▶ banco ──aviso──▶ pagoradar ──charge.paid──▶ tu app
+                                   la página dice "¡Pago recibido!" y vuelve a tu returnUrl
+```
+
+**Valor único:** cada cobro abierto de una cuenta tiene un valor distinto: lo pedido **más** 1 a 999
+pesos (`uniqueAmount: "up"`, por defecto), **menos** (`"down"`, un pequeño descuento) o exacto
+(`"off"`; entonces, si hay varios iguales, decide `payerName`). Nunca se usa el valor redondo, así
+un pago de $25.000 que no es de ningún cobro no salda nada por error. El aviso que trae exactamente
+ese valor, hecho mientras el cobro estaba abierto, lo paga.
+
+| | |
+|---|---|
+| `POST /v1/charges` | `{ "account": "acc_…", "amount": 25000, "description": "Pedido 123", "reference": "order-123", "expiresInMinutes": 30, "returnUrl": "https://tutienda.com/gracias", "metadata": {…} }` → `201` con el cobro |
+| `GET /v1/charges?status=&reference=&account=&tenantRef=` | Los cobros de la app (`{ charges, total }`) |
+| `GET /v1/charges/<id>` | Uno: `status` `pending` → `paid` / `expired` / `canceled`, `paymentId`, `paidAt` |
+| `POST /v1/charges/<id>/cancel` | Lo cancela (solo si está pendiente) y libera su valor |
+| `POST /v1/charges/<id>/pay` | `{ "paymentId": "pay_…" }`: asociar a mano un pago que llegó con otro valor |
+
+- En vez de `account` puedes mandar `tenantRef`: usa la cuenta de ese cliente.
+- `amount` en pesos enteros; `expiresInMinutes` de 5 a 10080 (30 por defecto). `reference` es tu id
+  de pedido: única por app, y crear otra vez con la misma devuelve el mismo cobro (reintentos seguros).
+- El cobro trae `amount` (lo que debe pagar), `baseAmount` (lo pedido), `adjustment`, `checkoutUrl`
+  y `payTo` (`key`, `holder`, `banks`).
+- **Página de pago** (`/c/<id>`, pública, sin datos privados): valor con botón Copiar, la **llave
+  Bre-B** y el titular de la cuenta (`payKey` / `payHolder`, desde el panel o
+  `PATCH /v1/accounts/<id>`), cuenta regresiva y el estado, que se actualiza solo. Al pagarse vuelve a
+  `returnUrl`. Puedes no usarla y mostrar tú `amount` y `payTo`.
+- `charge.paid` trae el cobro y `data.payment`; `data.late: true` si el aviso llegó justo después de
+  vencer (el valor de un cobro vencido queda reservado 30 min por eso). `charge.expired` al vencer.
+- En el panel, **Cobros** lista todos con su estado y permite cancelarlos.
+
+### SDK (Node)
+
+Un solo archivo sin dependencias, con tipos para TypeScript: `sdk/pagoradar.js` y
+`sdk/pagoradar.d.ts`. Cópialo a tu proyecto (o `npm i github:ingenieroedward/pagoradar` e
+`import … from "pagoradar/sdk"`).
+
+```js
+import { Pagoradar, constructEvent } from "./pagoradar.js";
+
+const pr = new Pagoradar({ apiKey: process.env.PAGORADAR_API_KEY, baseUrl: "https://pagoradar.tudominio.com" });
+const charge = await pr.charges.create({ tenantRef: "org_42", amount: 25000, reference: "order-123", returnUrl: "https://tutienda.com/gracias" });
+// → redirige a charge.checkoutUrl
+
+// En tu webhook (cuerpo crudo):
+const event = constructEvent(rawBody, req.headers["pagoradar-signature"], process.env.PAGORADAR_WEBHOOK_SECRET);
+if (event.type === "charge.paid") await markOrderPaid(event.data.reference);
+```
+
+También `pr.accounts.create/list/get/update/remove`, `pr.charges.list/get/cancel/pay`,
+`pr.payments.list` y `pr.webhooks.test`. Los errores son `PagoradarError` con `status`.
 
 ### Cuentas receptoras por API (para tus clientes)
 
@@ -232,7 +297,7 @@ pagoradar. Todas con `Authorization: Bearer <API key de la app>`:
 | `POST /v1/accounts` | `{ "name": "Tienda de Ana", "ownerEmails": ["ana@gmail.com"], "banks": ["nequi_negocios"], "tenantRef": "org_42" }` → `201` con la cuenta |
 | `GET /v1/accounts?tenantRef=org_42` | Las cuentas de la app (o de un cliente) |
 | `GET /v1/accounts/<id>` | Una cuenta: `status` (`pending` → `active`, o `disabled`), `confirmationCode` / `confirmationLink` de Gmail, `lastPaymentAt`… |
-| `PATCH /v1/accounts/<id>` | Cambiar `name`, `ownerEmails`, `banks`, `tenantRef` o `active` |
+| `PATCH /v1/accounts/<id>` | Cambiar `name`, `ownerEmails`, `banks`, `tenantRef`, `payKey`, `payHolder` o `active` |
 | `DELETE /v1/accounts/<id>` | La elimina; si ya tiene pagos, solo la desactiva |
 
 La cuenta trae `address` y `setup` (`forwardTo` y `gmailFilterFrom`, el texto para el filtro de
