@@ -535,7 +535,7 @@ function appsPage(s, error = null) {
     active: "/apps",
     status: error ? 400 : 200,
     body: html`
-      <div class="head"><div><h1>Apps</h1><p class="muted">Cada proyecto que recibe pagos (Ibirifas, otro SaaS…): su webhook y sus API keys.</p></div></div>
+      <div class="head"><div><h1>Apps</h1><p class="muted">Cada proyecto que recibe pagos (Ibirifas, otro SaaS…): su webhook y sus API keys.</p></div><a class="btn btn-small" href="/docs" target="_blank" rel="noopener">${icon("book")}<span>Documentación para desarrolladores</span></a></div>
       ${flash(error, "bad")}
       ${apps.length === 0
         ? html`<div class="card"><p class="empty">Aún no hay apps. Crea la primera abajo.</p></div>`

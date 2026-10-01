@@ -168,6 +168,10 @@ nuevo), `not_approved`, `unknown_address`, `account_disabled`, `ambiguous_header
 
 ## Para tus apps
 
+> **Documentación completa para desarrolladores:** abre `/docs` en tu pagoradar
+> (ej. `https://pagoradar.tudominio.com/docs`): inicio rápido, cuentas, cobros, pagos, webhooks
+> con verificación de firma en Node/Python/PHP, SDK y guías. También está en el panel (Documentación).
+
 ### Webhook
 
 `POST` a cada URL de la fuente, `Content-Type: application/json`:

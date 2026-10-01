@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="description" content="Documentación para desarrolladores de pagoradar: cuentas receptoras, cobros con valor único, pagos, webhooks firmados y SDK.">
+<title>Documentación para desarrolladores · pagoradar</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="stylesheet" href="/static/docs.css?v={{V}}">
+<script src="/static/docs.js?v={{V}}" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/docs"><svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="15" fill="var(--accent-soft)"/><circle cx="16" cy="16" r="10.5" fill="none" stroke="var(--accent)" stroke-opacity=".45" stroke-width="1.6"/><circle cx="16" cy="16" r="5.5" fill="none" stroke="var(--accent)" stroke-opacity=".7" stroke-width="1.6"/><path d="M16 16 25.6 9.4A11.7 11.7 0 0 0 16 4.3z" fill="var(--accent)" fill-opacity=".35"/><circle cx="16" cy="16" r="2" fill="var(--accent)"/><circle cx="21.5" cy="10.8" r="1.8" fill="var(--accent)"/></svg><span>pagoradar</span><span class="tag">Docs</span></a>
+  <nav class="top-links"><a href="#inicio-rapido">Inicio rápido</a><a href="#cobros">Cobros</a><a href="#webhooks">Webhooks</a><a href="#sdk">SDK</a><a class="btn-panel" href="/">Ir al panel</a></nav>
+</header>
+
+<div class="layout">
+<aside class="toc" aria-label="Contenido">
+  <details class="toc-mobile" open>
+    <summary>Contenido</summary>
+    <nav>
+      <p class="toc-group">Empezar</p>
+      <a href="#introduccion">Introducción</a>
+      <a href="#inicio-rapido">Inicio rápido</a>
+      <a href="#conceptos">Conceptos</a>
+      <p class="toc-group">API</p>
+      <a href="#autenticacion">Autenticación y errores</a>
+      <a href="#cuentas">Cuentas receptoras</a>
+      <a href="#cobros">Cobros</a>
+      <a href="#pagos">Pagos</a>
+      <p class="toc-group">Webhooks</p>
+      <a href="#webhooks">Recibir eventos</a>
+      <a href="#eventos">Tipos de evento</a>
+      <a href="#firma">Verificar la firma</a>
+      <a href="#reintentos">Reintentos y orden</a>
+      <p class="toc-group">Herramientas</p>
+      <a href="#sdk">SDK de Node</a>
+      <a href="#pagina-de-pago">Página de pago</a>
+      <p class="toc-group">Guías</p>
+      <a href="#guia-tienda">Cobrar un pedido</a>
+      <a href="#guia-saas">SaaS con varios clientes</a>
+      <a href="#guia-conciliar">Pagos sin cobro</a>
+      <a href="#seguridad">Seguridad</a>
+      <a href="#bancos">Bancos soportados</a>
+    </nav>
+  </details>
+</aside>
+
+<main class="doc">
+
+<section id="introduccion">
+  <p class="eyebrow">Documentación para desarrolladores</p>
+  <h1>Cobra por Bre-B y entérate al instante</h1>
+  <p class="lead">pagoradar lee los avisos que el banco le manda al dueño de una cuenta (Nequi Negocios, Nequi, Bancolombia), comprueba que sean auténticos y le avisa a tu app con un <b>webhook firmado</b>. Encima de eso puedes crear <b>cobros</b>: un valor único por pedido, una página de pago lista y el evento <code>charge.paid</code> cuando el banco confirma. Sin pasarela intermedia ni comisiones: el dinero llega directo a la cuenta.</p>
+  <div class="flow" role="img" aria-label="Flujo: tu app crea un cobro, el cliente paga por Bre-B, el banco avisa, pagoradar envía charge.paid a tu app">
+    <div class="flow-step"><b>1</b><span>Tu app crea un cobro</span><code>POST /v1/charges</code></div>
+    <div class="flow-step"><b>2</b><span>El cliente paga el valor exacto</span><code>Bre-B · llave</code></div>
+    <div class="flow-step"><b>3</b><span>El banco avisa por correo</span><code>DKIM verificado</code></div>
+    <div class="flow-step"><b>4</b><span>Tu app recibe el evento</span><code>charge.paid</code></div>
+  </div>
+  <div class="cards3">
+    <a class="card-link" href="#inicio-rapido"><b>Inicio rápido</b><span>Tu primer cobro en 5 pasos.</span></a>
+    <a class="card-link" href="#cobros"><b>API de cobros</b><span>Valor único, vencimiento y página de pago.</span></a>
+    <a class="card-link" href="#webhooks"><b>Webhooks</b><span>Eventos firmados con reintentos.</span></a>
+  </div>
+</section>
+
+<section id="inicio-rapido">
+  <h2>Inicio rápido</h2>
+  <ol class="steps">
+    <li><b>Crea una app</b> en el panel (<a href="/apps">Apps</a>) con la URL de tu webhook, por ejemplo <code>https://tu-app.com/api/pagoradar/webhook</code>. Copia el <b>secreto</b> del webhook.</li>
+    <li><b>Crea una API key</b> en esa app y guárdala en tu servidor como <code>PAGORADAR_API_KEY</code>. Se muestra una sola vez.</li>
+    <li><b>Conecta una cuenta receptora</b>: desde el panel (<a href="/accounts/new">Nueva cuenta</a>) o por API (<a href="#cuentas">ver abajo</a>). El dueño agrega en su Gmail la dirección de reenvío y un filtro; con el primer aviso del banco la cuenta queda <code>active</code>.</li>
+    <li><b>Crea un cobro</b> y manda al cliente a su <code>checkoutUrl</code>:
+      <div class="tabs">
+        <div class="tablist" role="tablist"><button role="tab" data-tab="curl">curl</button><button role="tab" data-tab="sdk">Node (SDK)</button></div>
+<pre data-tab="curl"><code>curl -X POST {{BASE}}/v1/charges \
+  -H "Authorization: Bearer $PAGORADAR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"account":"acc_k3m9x2p7q4wz","amount":25000,"description":"Pedido 123","reference":"order-123"}'</code></pre>
+<pre data-tab="sdk"><code>import { Pagoradar } from "./pagoradar.js";
+
+const pr = new Pagoradar({ apiKey: process.env.PAGORADAR_API_KEY, baseUrl: "{{BASE}}" });
+const charge = await pr.charges.create({ account: "acc_k3m9x2p7q4wz", amount: 25000, description: "Pedido 123", reference: "order-123" });
+// charge.amount === 25001 · redirige al cliente a charge.checkoutUrl</code></pre>
+      </div>
+    </li>
+    <li><b>Recibe <code>charge.paid</code></b> en tu webhook, <a href="#firma">verifica la firma</a> y marca el pedido como pagado con <code>event.data.reference</code>.</li>
+  </ol>
+  <div class="note"><b>Prueba sin pagar:</b> <code>POST /v1/webhooks/test</code> envía un evento <code>payment.test</code> firmado a tu webhook, y en el panel puedes ver cada entrega y reintentarla.</div>
+</section>
+
+<section id="conceptos">
+  <h2>Conceptos</h2>
+  <dl class="concepts">
+    <div><dt>App</dt><dd>Un proyecto tuyo (una tienda, Ibirifas, otro SaaS). Tiene su webhook, su secreto de firma y sus API keys. Cada app solo ve lo suyo.</dd></div>
+    <div><dt>Cuenta receptora</dt><dd>Una cuenta bancaria que reenvía sus avisos a una dirección de pagoradar (<code>algo@pagos.tudominio.com</code>). Pertenece a una app y opcionalmente a uno de tus clientes (<code>tenantRef</code>).</dd></div>
+    <div><dt>Pago</dt><dd>Un aviso del banco leído y verificado: valor, quién pagó, banco, fecha. Llega como <code>payment.received</code>.</dd></div>
+    <div><dt>Cobro</dt><dd>Lo que tu app le pide a un cliente. Recibe un valor único (ej. <code>25.001</code>) para reconocer su pago, una página de pago y un vencimiento.</dd></div>
+    <div><dt>Evento</dt><dd>Lo que pagoradar envía a tu webhook: pagos, cobros pagados o vencidos y el estado de las cuentas.</dd></div>
+  </dl>
+</section>
+
+<section id="autenticacion">
+  <h2>Autenticación y errores</h2>
+  <p>Todas las rutas <code>/v1/*</code> usan la API key de la app en la cabecera <code>Authorization</code>. Úsala solo desde tu servidor.</p>
+<pre><code>Authorization: Bearer prk_8rtksefe_…
+Content-Type: application/json</code></pre>
+  <p>URL base: <code>{{BASE}}</code>. Los cuerpos son JSON (máximo 16&nbsp;KB) y los valores de dinero van en <b>pesos enteros</b> (<code>amount</code>) y también en centavos (<code>amountCents</code>). Las fechas son ISO 8601 en UTC.</p>
+  <p>Un error responde con su código HTTP y un mensaje en español:</p>
+<pre><code>HTTP/1.1 400 Bad Request
+{ "error": "amount: valor en pesos, entero, de 1 a 100.000.000" }</code></pre>
+  <table class="ref">
+    <thead><tr><th>Código</th><th>Cuándo</th></tr></thead>
+    <tbody>
+      <tr><td><code>400</code></td><td>Datos inválidos (el mensaje dice qué campo).</td></tr>
+      <tr><td><code>401</code></td><td>API key ausente, revocada o de una app inactiva.</td></tr>
+      <tr><td><code>404</code></td><td>No existe, o es de otra app (se responde igual a propósito).</td></tr>
+      <tr><td><code>409</code></td><td>Conflicto: <code>reference</code> repetida con otros datos, cuenta desactivada, cobro ya pagado, sin valores únicos libres…</td></tr>
+      <tr><td><code>429</code></td><td>Límite superado: 60 cuentas nuevas por hora y 2.000 cobros por hora por app.</td></tr>
+      <tr><td><code>5xx</code></td><td>Error de pagoradar: reintenta con espera.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="cuentas">
+  <h2>Cuentas receptoras</h2>
+  <p>Si tu app es un SaaS, crea la cuenta de cada cliente por API y muéstrale los pasos; el cliente nunca entra a pagoradar. <code>tenantRef</code> es tu id del cliente y llega en cada pago.</p>
+
+  <h3>El objeto cuenta</h3>
+  <table class="fields">
+    <tbody>
+      <tr><td><code>id</code> <span class="type">texto</span></td><td><code>acc_…</code></td></tr>
+      <tr><td><code>name</code> <span class="type">texto</span></td><td>Para reconocerla (1 a 60 caracteres).</td></tr>
+      <tr><td><code>address</code> <span class="type">texto</span></td><td>Dirección a la que el Gmail del dueño reenvía los avisos.</td></tr>
+      <tr><td><code>ownerEmails</code> <span class="type">lista</span></td><td>Correos donde el banco avisa. Un aviso dirigido a otro correo se rechaza.</td></tr>
+      <tr><td><code>banks</code> <span class="type">lista</span></td><td><code>nequi_negocios</code>, <code>nequi</code>, <code>bancolombia</code>.</td></tr>
+      <tr><td><code>tenantRef</code> <span class="type">texto · null</span></td><td>Tu id del cliente (hasta 120).</td></tr>
+      <tr><td><code>status</code> <span class="type">texto</span></td><td><code>pending</code> (falta el primer aviso) → <code>active</code>, o <code>disabled</code>.</td></tr>
+      <tr><td><code>confirmationCode</code>, <code>confirmationLink</code> <span class="type">texto · null</span></td><td>El código que Gmail manda al agregar la dirección de reenvío, para mostrárselo a tu cliente.</td></tr>
+      <tr><td><code>payKey</code>, <code>payHolder</code> <span class="type">texto · null</span></td><td>Llave Bre-B y titular que ven los clientes en la página de pago (hasta 80).</td></tr>
+      <tr><td><code>setup.forwardTo</code>, <code>setup.gmailFilterFrom</code></td><td>Lo que tu app muestra en la guía: la dirección y el texto del filtro de Gmail (remitentes del banco).</td></tr>
+      <tr><td><code>lastEmailAt</code>, <code>lastPaymentAt</code>, <code>createdAt</code></td><td>Fechas ISO o null.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="endpoint"><span class="method post">POST</span><code>/v1/accounts</code><span>Crear</span></div>
+  <div class="tabs">
+    <div class="tablist" role="tablist"><button role="tab" data-tab="curl">curl</button><button role="tab" data-tab="sdk">Node (SDK)</button></div>
+<pre data-tab="curl"><code>curl -X POST {{BASE}}/v1/accounts \
+  -H "Authorization: Bearer $PAGORADAR_API_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"Tienda de Ana","ownerEmails":["ana@gmail.com"],"banks":["nequi_negocios"],"tenantRef":"org_42","payKey":"@tiendaana","payHolder":"Ana Pérez"}'</code></pre>
+<pre data-tab="sdk"><code>const account = await pr.accounts.create({
+  name: "Tienda de Ana",
+  ownerEmails: ["ana@gmail.com"],
+  banks: ["nequi_negocios"],
+  tenantRef: "org_42",
+  payKey: "@tiendaana",
+  payHolder: "Ana Pérez",
+});
+// account.setup.forwardTo → "tienda-de-ana-x7k2qp@pagos.tudominio.com"</code></pre>
+  </div>
+<pre class="response"><code>201 Created
+{
+  "id": "acc_k3m9x2p7q4wz",
+  "name": "Tienda de Ana",
+  "address": "tienda-de-ana-x7k2qp@pagos.tudominio.com",
+  "ownerEmails": ["ana@gmail.com"],
+  "banks": ["nequi_negocios"],
+  "tenantRef": "org_42",
+  "status": "pending",
+  "confirmationCode": null,
+  "payKey": "@tiendaana",
+  "payHolder": "Ana Pérez",
+  "setup": { "forwardTo": "tienda-de-ana-x7k2qp@pagos.tudominio.com", "gmailFilterFrom": "notificaciones@nequi.com.co" },
+  "createdAt": "2026-10-01T15:20:11.000Z"
+}</code></pre>
+
+  <div class="endpoint"><span class="method get">GET</span><code>/v1/accounts?tenantRef=org_42</code><span>Listar (de la app o de un cliente)</span></div>
+  <div class="endpoint"><span class="method get">GET</span><code>/v1/accounts/{id}</code><span>Una cuenta: estado y código de Gmail</span></div>
+  <div class="endpoint"><span class="method patch">PATCH</span><code>/v1/accounts/{id}</code><span>Cambiar <code>name</code>, <code>ownerEmails</code>, <code>banks</code>, <code>tenantRef</code>, <code>payKey</code>, <code>payHolder</code> o <code>active</code></span></div>
+  <div class="endpoint"><span class="method delete">DELETE</span><code>/v1/accounts/{id}</code><span>Eliminar (si ya tiene pagos, solo se desactiva)</span></div>
+<pre class="response"><code>{ "id": "acc_k3m9x2p7q4wz", "deleted": false, "disabled": true }</code></pre>
+  <p>Al eliminar una cuenta se cancelan sus cobros abiertos; una cuenta desactivada no recibe avisos ni acepta cobros nuevos. Para guiar a tu cliente usa los eventos <code>account.confirmation_code</code> (muestra el código) y <code>account.activated</code> (ya quedó lista).</p>
+</section>
+
+<section id="cobros">
+  <h2>Cobros</h2>
+  <p>Un cobro es lo que le pides a un cliente. pagoradar le asigna un <b>valor único</b> dentro de la cuenta para reconocer su pago solo con el aviso del banco, una <a href="#pagina-de-pago">página de pago</a> y un vencimiento.</p>
+
+  <h3>Cómo se reconoce el pago</h3>
+  <ul class="checks">
+    <li><b>Valor único</b> (<code>uniqueAmount</code>): <code>"up"</code> (por defecto) suma de 1 a 999 pesos a lo pedido; <code>"down"</code> los resta (un pequeño descuento); <code>"off"</code> cobra el valor exacto. Nunca se usa el valor redondo, así un pago normal de <code>25.000</code> no salda un cobro por error.</li>
+    <li><b>Exacto</b>: el aviso trae justo ese valor y se hizo mientras el cobro estaba abierto → <code>match: "exact"</code>. Con <code>"off"</code> y varios cobros iguales, decide <code>payerName</code>.</li>
+    <li><b>Valor redondo</b>: si el cliente paga lo pedido (25.000 en vez de 25.001) y solo un cobro abierto de esa cuenta pidió ese valor (o solo uno espera a ese titular) → <code>match: "approximate"</code>. Si hay duda, no se adivina.</li>
+    <li><b>A mano</b>: <code>POST /v1/charges/{id}/pay</code> o el panel → <code>match: "manual"</code>.</li>
+    <li><b>Tarde</b>: un pago hecho antes del vencimiento (o hasta 5 minutos después) lo salda aunque el aviso del banco llegue más tarde (<code>late: true</code>). Por eso el valor de un cobro vencido queda reservado 30 minutos.</li>
+  </ul>
+
+  <h3>Crear un cobro</h3>
+  <div class="endpoint"><span class="method post">POST</span><code>/v1/charges</code></div>
+  <table class="fields">
+    <tbody>
+      <tr><td><code>account</code> <span class="type">texto</span> <span class="req">o tenantRef</span></td><td>La cuenta donde el cliente paga. O manda <code>tenantRef</code> para usar la cuenta de ese cliente.</td></tr>
+      <tr><td><code>amount</code> <span class="type">entero</span> <span class="req">obligatorio</span></td><td>Pesos, de 1 a 100.000.000.</td></tr>
+      <tr><td><code>description</code> <span class="type">texto</span></td><td>Se muestra en la página de pago (hasta 140).</td></tr>
+      <tr><td><code>reference</code> <span class="type">texto</span></td><td>Tu id de pedido (hasta 120). Única por app: crear otra vez con la misma devuelve el mismo cobro (<code>200</code>), así los reintentos son seguros. Con otros datos → <code>409</code>.</td></tr>
+      <tr><td><code>uniqueAmount</code> <span class="type">texto</span></td><td><code>up</code> (por defecto), <code>down</code> u <code>off</code>.</td></tr>
+      <tr><td><code>expiresInMinutes</code> <span class="type">entero</span></td><td>De 5 a 10.080 (7 días). Por defecto 30.</td></tr>
+      <tr><td><code>payerName</code> <span class="type">texto</span></td><td>Titular esperado; solo sirve para desempatar.</td></tr>
+      <tr><td><code>returnUrl</code> <span class="type">URL</span></td><td>A dónde vuelve el cliente desde la página de pago cuando se paga.</td></tr>
+      <tr><td><code>metadata</code> <span class="type">objeto</span></td><td>Tus datos (hasta 2.000 caracteres en JSON). No se muestran al cliente.</td></tr>
+    </tbody>
+  </table>
+  <div class="tabs">
+    <div class="tablist" role="tablist"><button role="tab" data-tab="curl">curl</button><button role="tab" data-tab="sdk">Node (SDK)</button></div>
+<pre data-tab="curl"><code>curl -X POST {{BASE}}/v1/charges \
+  -H "Authorization: Bearer $PAGORADAR_API_KEY" -H "Content-Type: application/json" \
+  -d '{"tenantRef":"org_42","amount":25000,"description":"3 boletas · Rifa moto","reference":"order-123","returnUrl":"https://tu-app.com/gracias","metadata":{"cart":7}}'</code></pre>
+<pre data-tab="sdk"><code>const charge = await pr.charges.create({
+  tenantRef: "org_42",
+  amount: 25000,
+  description: "3 boletas · Rifa moto",
+  reference: "order-123",
+  returnUrl: "https://tu-app.com/gracias",
+  metadata: { cart: 7 },
+});</code></pre>
+  </div>
+<pre class="response"><code>201 Created
+{
+  "id": "chg_q8m2x7k4p9t3w6z5n2b8c4v7",
+  "status": "pending",
+  "amount": 25001,
+  "amountCents": 2500100,
+  "baseAmount": 25000,
+  "adjustment": 1,
+  "currency": "COP",
+  "description": "3 boletas · Rifa moto",
+  "reference": "order-123",
+  "metadata": { "cart": 7 },
+  "account": { "id": "acc_k3m9x2p7q4wz", "name": "Tienda de Ana", "tenantRef": "org_42" },
+  "payTo": { "key": "@tiendaana", "holder": "Ana Pérez", "banks": ["nequi_negocios"] },
+  "checkoutUrl": "{{BASE}}/c/chg_q8m2x7k4p9t3w6z5n2b8c4v7",
+  "returnUrl": "https://tu-app.com/gracias",
+  "paymentId": null,
+  "match": null,
+  "paidAmount": null,
+  "createdAt": "2026-10-01T15:20:11.000Z",
+  "expiresAt": "2026-10-01T15:50:11.000Z",
+  "paidAt": null
+}</code></pre>
+
+  <h3>Estados</h3>
+  <p><span class="pill warn">pending</span> → <span class="pill ok">paid</span> · <span class="pill">expired</span> · <span class="pill">canceled</span>. Un cobro vencido aún puede pasar a <code>paid</code> por un aviso tardío o asociándolo a mano.</p>
+
+  <h3>Otras rutas</h3>
+  <div class="endpoint"><span class="method get">GET</span><code>/v1/charges?status=&amp;reference=&amp;account=&amp;tenantRef=&amp;limit=&amp;offset=</code><span>Listar → <code>{ charges, total }</code> (50 por defecto, máximo 500)</span></div>
+  <div class="endpoint"><span class="method get">GET</span><code>/v1/charges/{id}</code><span>Uno</span></div>
+  <div class="endpoint"><span class="method post">POST</span><code>/v1/charges/{id}/cancel</code><span>Cancelar (solo si está pendiente); libera su valor</span></div>
+  <div class="endpoint"><span class="method post">POST</span><code>/v1/charges/{id}/pay</code><span>Asociar a mano un pago: <code>{ "paymentId": "pay_…" }</code></span></div>
+  <p>Para asociar a mano, el pago debe ser de la misma cuenta y no estar asociado a otro cobro; sirve también para un cobro vencido o cancelado.</p>
+</section>
+
+<section id="pagos">
+  <h2>Pagos</h2>
+  <p>Cada aviso válido del banco. Lo normal es recibirlos por webhook; esta ruta es el respaldo para ponerte al día (por ejemplo al arrancar tu app).</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/v1/payments?since=&amp;limit=&amp;account=&amp;tenantRef=</code></div>
+  <p>Devuelve los pagos <b>en orden de llegada</b> después de <code>since</code> (ISO) y <code>next</code>: pide otra vez con <code>since=next</code> hasta que <code>payments</code> venga vacío. <code>limit</code> va de 1 a 500 (100 por defecto).</p>
+<pre class="response"><code>{
+  "payments": [
+    {
+      "id": "pay_mg7x2k1a9f3c…",
+      "appId": "ibirifas",
+      "accountId": "acc_k3m9x2p7q4wz",
+      "bank": "nequi_negocios",
+      "method": "breb_qr",
+      "methodText": "QR Negocios Bre-B",
+      "amount": 25001,
+      "amountCents": 2500100,
+      "currency": "COP",
+      "payerName": "Ana Maria Perez Lopez",
+      "payerNameNormalized": "ANA MARIA PEREZ LOPEZ",
+      "payerBank": "Bancolombia",
+      "reference": "M00000001",
+      "transactionId": "a1b2c3…",
+      "accountHint": null,
+      "paidAt": "2026-10-01T15:22:53.000Z",
+      "receivedAt": "2026-10-01T15:22:55.118Z",
+      "chargeId": "chg_q8m2x7k4p9t3w6z5n2b8c4v7"
+    }
+  ],
+  "next": "2026-10-01T15:22:55.118Z"
+}</code></pre>
+  <p><code>method</code>: <code>breb_qr</code>, <code>breb</code>, <code>transfer</code> u <code>other</code>. <code>accountHint</code> es la cuenta que recibió (<code>*0000</code>) cuando el banco la dice. Un aviso repetido nunca crea dos pagos.</p>
+</section>
+
+<section id="webhooks">
+  <h2>Recibir eventos</h2>
+  <p>pagoradar hace <code>POST</code> a la URL del webhook de la app con un JSON como este:</p>
+<pre><code>{
+  "id": "evt_charge_paid_q8m2x7k4p9t3w6z5n2b8c4v7",
+  "type": "charge.paid",
+  "createdAt": "2026-10-01T15:22:55.300Z",
+  "source": "ibirifas",
+  "data": { … }
+}</code></pre>
+  <table class="ref">
+    <thead><tr><th>Cabecera</th><th>Qué es</th></tr></thead>
+    <tbody>
+      <tr><td><code>Pagoradar-Signature</code></td><td><code>t=&lt;unix&gt;,v1=&lt;hex&gt;</code>: la firma del cuerpo (<a href="#firma">ver abajo</a>).</td></tr>
+      <tr><td><code>Pagoradar-Event-Id</code></td><td>El mismo <code>id</code> del evento: úsalo para no procesar dos veces.</td></tr>
+      <tr><td><code>User-Agent</code></td><td><code>pagoradar/2</code></td></tr>
+    </tbody>
+  </table>
+  <p>Responde <b>2xx en menos de 10 segundos</b>. Haz el trabajo pesado después (cola o tarea en segundo plano). Las redirecciones no se siguen: una respuesta 3xx cuenta como fallo.</p>
+</section>
+
+<section id="eventos">
+  <h2>Tipos de evento</h2>
+  <table class="ref events">
+    <thead><tr><th>Tipo</th><th><code>data</code></th></tr></thead>
+    <tbody>
+      <tr><td><code>payment.received</code></td><td>Un <a href="#pagos">pago</a>, con <code>account</code> (<code>id</code>, <code>name</code>, <code>tenantRef</code>) y <code>charge</code> (<code>{ id, reference }</code> o <code>null</code>).</td></tr>
+      <tr><td><code>charge.paid</code></td><td>El <a href="#cobros">cobro</a> pagado, con <code>payment</code>, <code>late</code> y <code>manual</code> (si se asoció a mano). Mira <code>match</code> y <code>paidAmount</code>.</td></tr>
+      <tr><td><code>charge.expired</code></td><td>El cobro que venció sin pago. Libera tu pedido o reserva.</td></tr>
+      <tr><td><code>account.confirmation_code</code></td><td><code>{ account, code, link }</code>: el código de Gmail para mostrarle a tu cliente.</td></tr>
+      <tr><td><code>account.activated</code></td><td><code>{ account }</code>: llegó el primer aviso válido; la cuenta está lista.</td></tr>
+      <tr><td><code>payment.test</code></td><td>Datos de prueba. No es un pago real.</td></tr>
+    </tbody>
+  </table>
+  <p>Ignora con <code>200</code> los tipos que no conozcas: pueden aparecer tipos nuevos.</p>
+</section>
+
+<section id="firma">
+  <h2>Verificar la firma</h2>
+  <p><code>v1 = HMAC-SHA256(secreto, "&lt;t&gt;.&lt;cuerpo crudo&gt;")</code> en hexadecimal. Compara en tiempo constante y rechaza firmas de más de 5 minutos. Usa el <b>cuerpo crudo</b>, tal cual llegó, antes de <code>JSON.parse</code>.</p>
+  <div class="tabs">
+    <div class="tablist" role="tablist"><button role="tab" data-tab="next">Next.js</button><button role="tab" data-tab="express">Express</button><button role="tab" data-tab="python">Python</button><button role="tab" data-tab="php">PHP</button></div>
+<pre data-tab="next"><code>// app/api/pagoradar/webhook/route.ts
+import { constructEvent } from "@/lib/pagoradar"; // el SDK copiado a tu proyecto
+
+export async function POST(req: Request) {
+  const raw = await req.text();
+  let event;
+  try {
+    event = constructEvent(raw, req.headers.get("pagoradar-signature"), process.env.PAGORADAR_WEBHOOK_SECRET!);
+  } catch {
+    return new Response("Firma inválida", { status: 400 });
+  }
+  if (event.type === "charge.paid") await marcarPedidoPagado(event.data.reference!, event.data.payment.id);
+  if (event.type === "charge.expired") await liberarPedido(event.data.reference!);
+  return Response.json({ ok: true });
+}</code></pre>
+<pre data-tab="express"><code>import express from "express";
+import { constructEvent } from "./pagoradar.js";
+
+const app = express();
+app.post("/api/pagoradar/webhook", express.raw({ type: "application/json" }), (req, res) => {
+  let event;
+  try {
+    event = constructEvent(req.body, req.get("pagoradar-signature"), process.env.PAGORADAR_WEBHOOK_SECRET);
+  } catch {
+    return res.status(400).send("Firma inválida");
+  }
+  if (event.type === "charge.paid") colaDePedidos.push(event.data.reference);
+  res.json({ ok: true });
+});</code></pre>
+<pre data-tab="python"><code>import hashlib, hmac, time
+
+def verificar_pagoradar(secreto: str, cabecera: str, cuerpo: bytes, tolerancia: int = 300) -> bool:
+    partes = dict(p.strip().split("=", 1) for p in cabecera.split(",") if "=" in p)
+    t = int(partes.get("t", "0"))
+    if abs(time.time() - t) > tolerancia:
+        return False
+    esperado = hmac.new(secreto.encode(), f"{t}.".encode() + cuerpo, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(esperado, partes.get("v1", ""))</code></pre>
+<pre data-tab="php"><code>&lt;?php
+function verificarPagoradar(string $secreto, string $cabecera, string $cuerpo, int $tolerancia = 300): bool {
+    parse_str(str_replace(',', '&amp;', $cabecera), $p);
+    $t = (int) ($p['t'] ?? 0);
+    if (abs(time() - $t) > $tolerancia) return false;
+    $esperado = hash_hmac('sha256', $t . '.' . $cuerpo, $secreto);
+    return hash_equals($esperado, $p['v1'] ?? '');
+}
+// $cuerpo = file_get_contents('php://input');</code></pre>
+  </div>
+</section>
+
+<section id="reintentos">
+  <h2>Reintentos y orden</h2>
+  <p>Si tu webhook no responde 2xx, se reintenta a los <b>30 s, 2 min, 10 min, 30 min, 1 h, 3 h, 6 h, 12 h y 24 h</b>; después queda como fallido y puedes reintentarlo desde el panel (Apps → tu app → Entregas). Cada intento usa la URL y el secreto <b>actuales</b> de la app, así corregir la URL y reintentar funciona.</p>
+  <ul class="checks">
+    <li><b>Idempotencia</b>: el mismo evento puede llegar más de una vez. Guarda <code>event.id</code> (o <code>Pagoradar-Event-Id</code>) y no lo proceses dos veces.</li>
+    <li><b>Orden</b>: cuando un pago salda un cobro, se encola primero <code>payment.received</code> (con <code>data.charge</code>) y luego <code>charge.paid</code>. Con reintentos el orden no está garantizado: decide por el estado, no por el orden de llegada.</li>
+    <li><b>Ponerse al día</b>: si tu app estuvo caída, recorre <code>GET /v1/payments?since=</code>.</li>
+  </ul>
+</section>
+
+<section id="sdk">
+  <h2>SDK de Node</h2>
+  <p>Un solo archivo sin dependencias (Node 18+), con tipos para TypeScript: <code>sdk/pagoradar.js</code> y <code>sdk/pagoradar.d.ts</code> en el repositorio. Cópialos a tu proyecto, o instala el repo e importa <code>pagoradar/sdk</code>.</p>
+<pre><code>import { Pagoradar, PagoradarError, constructEvent, verifySignature } from "./pagoradar.js";
+
+const pr = new Pagoradar({ apiKey: process.env.PAGORADAR_API_KEY, baseUrl: "{{BASE}}", timeoutMs: 10000 });
+
+await pr.accounts.create(fields);          // .list({ tenantRef }) .get(id) .update(id, fields) .remove(id)
+await pr.charges.create(fields);           // .list(filtros) .get(id) .cancel(id) .pay(id, paymentId)
+await pr.payments.list({ since, limit });  // { payments, next }
+await pr.webhooks.test();
+
+try {
+  await pr.charges.create({ account: "acc_…", amount: 0 });
+} catch (e) {
+  if (e instanceof PagoradarError) console.log(e.status, e.message); // 400 "amount: …"
+}</code></pre>
+  <p><code>constructEvent(cuerpoCrudo, cabecera, secreto)</code> verifica y devuelve el evento tipado (lanza <code>PagoradarError</code> si la firma no es válida); <code>verifySignature(...)</code> solo devuelve <code>true</code> o <code>false</code>.</p>
+</section>
+
+<section id="pagina-de-pago">
+  <h2>Página de pago</h2>
+  <p>Cada cobro tiene una página pública en <code>checkoutUrl</code> (<code>{{BASE}}/c/chg_…</code>): el valor exacto con botón Copiar, la llave Bre-B y el titular de la cuenta (<code>payKey</code>, <code>payHolder</code>), una cuenta regresiva y el estado, que se actualiza solo. Al pagarse muestra "¡Pago recibido!" y vuelve a <code>returnUrl</code>. No muestra <code>reference</code> ni <code>metadata</code>.</p>
+  <p>¿Prefieres tu propia pantalla? Usa <code>amount</code>, <code>adjustment</code>, <code>payTo</code> y <code>expiresAt</code> del cobro, y consulta <code>GET /v1/charges/{id}</code> o espera el webhook.</p>
+  <div class="note warn"><b>No confíes en la redirección.</b> Que el cliente vuelva a tu <code>returnUrl</code> no prueba que pagó: marca el pedido como pagado solo con <code>charge.paid</code> o consultando el cobro desde tu servidor.</div>
+</section>
+
+<section id="guia-tienda">
+  <h2>Guía: cobrar un pedido</h2>
+  <ol class="steps">
+    <li>Al confirmar el pedido, crea el cobro con <code>reference</code> = id del pedido y <code>returnUrl</code> a tu página de "gracias".</li>
+    <li>Redirige al cliente a <code>checkoutUrl</code> (o muestra <code>amount</code> y <code>payTo</code> en tu app).</li>
+    <li>En el webhook: <code>charge.paid</code> → pedido pagado; <code>charge.expired</code> → libera el inventario.</li>
+    <li>En tu página de "gracias", consulta el estado en tu base de datos (actualizada por el webhook) y muestra "pago en verificación" mientras tanto.</li>
+  </ol>
+</section>
+
+<section id="guia-saas">
+  <h2>Guía: SaaS con varios clientes</h2>
+  <p>Así lo hace Ibirifas: cada organizador conecta su propia cuenta.</p>
+  <ol class="steps">
+    <li>Cuando tu cliente active los pagos, crea su cuenta con <code>tenantRef</code> = su id y guarda el <code>id</code> de la cuenta.</li>
+    <li>Muéstrale <code>setup.forwardTo</code> y <code>setup.gmailFilterFrom</code>, y el código de Gmail cuando llegue <code>account.confirmation_code</code> (o consulta la cuenta cada pocos segundos mientras esté <code>pending</code>).</li>
+    <li>Con <code>account.activated</code>, marca su integración como lista.</li>
+    <li>En cada evento usa <code>data.account.id</code> o <code>data.account.tenantRef</code> para saber de qué cliente es, y crea cobros con <code>tenantRef</code>.</li>
+  </ol>
+</section>
+
+<section id="guia-conciliar">
+  <h2>Guía: pagos sin cobro</h2>
+  <p>Un <code>payment.received</code> con <code>charge: null</code> es un pago que no saldó ningún cobro: pagaron otro valor, había varios cobros posibles o es un pago directo. Puedes cruzarlo con tu propia lógica (valor, titular, hora) y, si corresponde a un cobro, asociarlo con <code>POST /v1/charges/{id}/pay</code>; también se puede desde el panel (Pagos → Asociar a un cobro).</p>
+</section>
+
+<section id="seguridad">
+  <h2>Seguridad</h2>
+  <ul class="checks">
+    <li>Los avisos se aceptan solo con <b>firma DKIM válida del banco</b>, dirigidos a los correos dueños de la cuenta y desde los remitentes del banco: un correo falso no crea pagos.</li>
+    <li>Guarda la API key y el secreto del webhook en variables de entorno del servidor, nunca en el navegador ni en el repositorio.</li>
+    <li>Verifica siempre <code>Pagoradar-Signature</code> con el cuerpo crudo.</li>
+    <li>Si una key se filtra, revócala en el panel y crea otra; el secreto del webhook se puede cambiar (tu app dejará de aceptar eventos hasta que pongas el nuevo).</li>
+    <li>Una app nunca ve las cuentas, pagos ni cobros de otra.</li>
+  </ul>
+</section>
+
+<section id="bancos">
+  <h2>Bancos soportados</h2>
+  <table class="ref">
+    <thead><tr><th><code>bank</code></th><th>Aviso</th><th>Remitente</th></tr></thead>
+    <tbody>
+      <tr><td><code>nequi_negocios</code></td><td>"Detalle de tu venta por Bre-B" (QR o llave)</td><td><code>notificaciones@nequi.com.co</code></td></tr>
+      <tr><td><code>nequi</code></td><td>"¡Recibiste plata por Bre-B!"</td><td><code>notificaciones@nequi.com.co</code></td></tr>
+      <tr><td><code>bancolombia</code></td><td>Transferencia recibida (llave o cuenta)</td><td><code>alertasynotificaciones@an.notificacionesbancolombia.com</code></td></tr>
+    </tbody>
+  </table>
+  <p>¿Necesitas otro banco? Se agrega con un aviso real de ejemplo (sin datos personales).</p>
+  <p class="foot">pagoradar · <a href="/">Panel</a> · <a href="#introduccion">Volver arriba</a></p>
+</section>
+
+</main>
+</div>
+</body>
+</html>

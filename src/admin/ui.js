@@ -136,6 +136,7 @@ const ICON_PATHS = {
   download: '<path d="M12 4v12M7 11l5 5 5-5M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  book: '<path d="M4 19.5V5a2 2 0 0 1 2-2h13v16H6.5A2.5 2.5 0 0 0 4 21.5v-2z"/><path d="M8 7h7M8 11h5"/>',
   key: '<circle cx="8" cy="15" r="4"/><path d="m10.8 12.2 9.2-9.2M17 6l3 3M15 8l2 2"/>',
   webhook: '<path d="M18 16.98h-5.99c-1.1 0-1.95.94-2.48 1.9A4 4 0 0 1 2 17c.01-.7.2-1.4.57-2"/><path d="m6 17 3.13-5.78c.53-.97.1-2.18-.5-3.1a4 4 0 1 1 6.89-4.06"/><path d="m12 6 3.13 5.73C15.66 12.7 16.9 13 18 13a4 4 0 0 1 0 8"/>',
   copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>',
@@ -207,6 +208,7 @@ ${head}
   <a class="brand" href="/">${logo()}<span>pagoradar</span></a>
   <nav class="side-nav">${NAV.map((n) => navLink(n, active))}</nav>
   <div class="side-foot">
+    <a href="/docs" target="_blank" rel="noopener">${icon("book")}<span>Documentación</span></a>
     <a href="/me" class="who"${active === "/me" ? raw(' aria-current="page"') : ""}>${icon("user")}<span>${admin.name || admin.email}</span></a>
     ${logout}
   </div>
@@ -226,6 +228,7 @@ ${body}
       ${more.map((n) => navLink(n, active))}
       <a href="/audit"${active === "/audit" ? raw(' aria-current="page"') : ""}>${icon("audit")}<span>Auditoría</span></a>
       <a href="/me"${active === "/me" ? raw(' aria-current="page"') : ""}>${icon("user")}<span>Mi cuenta</span></a>
+      <a href="/docs" target="_blank" rel="noopener">${icon("book")}<span>Documentación</span></a>
       ${logout}
     </div>
   </details>

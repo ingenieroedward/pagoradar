@@ -1,6 +1,7 @@
 import { handleAdmin } from "./admin/routes.js";
 import { handleApi } from "./api.js";
 import { handleCheckout } from "./checkout.js";
+import { handleDocs } from "./docs.js";
 import { readBody, sendJson } from "./http.js";
 import { MAX_EMAIL_BYTES, ingestEmail, ingestSignature, validIngestSignature } from "./ingest.js";
 
@@ -11,6 +12,7 @@ export { ingestSignature };
  *   POST /ingest   raw email from the Cloudflare Worker (signed with INGEST_SECRET)
  *   /v1/*          API for apps (Bearer API key) — see api.js
  *   /c/<id>        public checkout page of a charge — see checkout.js
+ *   /docs          developer documentation — see docs.js
  *   GET /health
  *   everything else: the admin panel (password + 2-step code) — see admin/routes.js
  */
@@ -35,6 +37,7 @@ export function createApp(ctx) {
       }
       if (await handleApi(req, res, url, full)) return;
       if (handleCheckout(req, res, url, full)) return;
+      if (handleDocs(req, res, url, full)) return;
       return await handleAdmin(req, res, url, full);
     } catch (e) {
       log(`error: ${e?.stack ?? e}`);
