@@ -10,6 +10,9 @@ import { expireCharges, payManually } from "../charges.js";
 import {
   BANK_LABEL,
   REASON_LABEL,
+  fmtAgo,
+  section,
+  toggle,
   accountStatus,
   badge,
   icon,
@@ -460,11 +463,16 @@ function linkPaymentPage(s, id, { error = null } = {}) {
     active: "/payments",
     status: error ? 400 : 200,
     body: html`
-      <div class="head"><div><h1>Asociar a un cobro</h1><p class="muted">Para un pago que llegó con otro valor o que el cruce automático no pudo decidir.</p></div><a href="/payments">← Pagos</a></div>
+      <div class="head"><a class="back" href="/payments">← Pagos</a><div><h1>Asociar a un cobro</h1><p class="muted">Para un pago que llegó con otro valor o que el cruce automático no pudo decidir.</p></div></div>
       ${flash(error, "bad")}
-      <div class="card">
-        <h2>${fmtMoney(p.amount)} de ${p.payerName ?? "?"}</h2>
-        <p class="muted">${BANK_LABEL[p.bank] ?? p.bank} · ${fmtDate(p.paidAt)}${p.reference ? ` · Ref. ${p.reference}` : ""}</p>
+      <div class="card pay-hero">
+        <span class="tile-ico">${icon("payments")}</span>
+        <div class="pay-hero-main"><span class="stat-label">Pago recibido</span><b>${fmtMoney(p.amount)}</b><span class="muted">${p.payerName ?? "?"}${p.payerBank ? ` · desde ${p.payerBank}` : ""}</span></div>
+        <dl class="pay-hero-meta">
+          <div><dt>Banco</dt><dd>${BANK_LABEL[p.bank] ?? p.bank}</dd></div>
+          <div><dt>Fecha</dt><dd>${fmtDate(p.paidAt)}</dd></div>
+          ${p.reference ? html`<div><dt>Referencia</dt><dd>${p.reference}</dd></div>` : ""}
+        </dl>
       </div>
       <div class="card">
         ${linked
@@ -474,12 +482,12 @@ function linkPaymentPage(s, id, { error = null } = {}) {
             : html`<p class="muted small">Cobros abiertos, o vencidos/cancelados en los últimos 7 días, del más parecido en valor al menos parecido. La app recibe charge.paid.</p>
           <div class="table-wrap"><table>
             <thead><tr><th>Creado</th><th>Cobro</th><th>Estado</th><th class="num">Valor</th><th></th></tr></thead>
-            <tbody>${options.map((c) => html`<tr>
+            <tbody>${options.map((c, i) => html`<tr${i === 0 ? raw(' class="row-best"') : ""}>
               <td class="t-date">${fmtDate(c.createdAt)}</td>
-              <td class="t-main">${c.description ?? "—"}${c.reference ? html`<div class="muted small">Ref. ${c.reference}</div>` : ""}${c.payerName ? html`<div class="muted small">Espera a ${c.payerName}</div>` : ""}</td>
+              <td class="t-main">${i === 0 ? html`<span class="best">Más parecido</span>` : ""}<b>${c.description ?? "—"}</b>${c.reference ? html`<div class="muted small">Ref. ${c.reference}</div>` : ""}${c.payerName ? html`<div class="muted small">Espera a ${c.payerName}</div>` : ""}</td>
               <td>${chargeStatus(c.status)}</td>
               <td class="num"><b>${fmtMoney(c.amount)}</b>${c.amount !== c.baseAmount ? html`<div class="muted small">pedido ${fmtMoney(c.baseAmount)}</div>` : ""}</td>
-              <td class="t-act">${postButton(`/payments/${p.id}/link`, "Asociar", csrf, { tone: "primary", fields: { chargeId: c.id }, confirm: `¿Asociar este pago de ${fmtMoney(p.amount)} al cobro de ${fmtMoney(c.amount)}?` })}</td>
+              <td class="t-act">${postButton(`/payments/${p.id}/link`, "Asociar", csrf, { tone: i === 0 ? "primary" : "secondary", small: true, fields: { chargeId: c.id }, confirm: `¿Asociar este pago de ${fmtMoney(p.amount)} al cobro de ${fmtMoney(c.amount)}?` })}</td>
             </tr>`)}</tbody></table></div>`}
       </div>`,
   });
@@ -504,6 +512,14 @@ function linkPayment(s, id) {
 function appsPage(s, error = null) {
   const { store } = s.ctx;
   const apps = store.apps.list();
+  const csrf = s.session.csrf;
+  const host = (u) => {
+    try {
+      return new URL(u).host;
+    } catch {
+      return u;
+    }
+  };
   return page(s, {
     title: "Apps",
     active: "/apps",
@@ -511,25 +527,25 @@ function appsPage(s, error = null) {
     body: html`
       <div class="head"><div><h1>Apps</h1><p class="muted">Cada proyecto que recibe pagos (Ibirifas, otro SaaS…): su webhook y sus API keys.</p></div></div>
       ${flash(error, "bad")}
-      <div class="card">
-        ${apps.length === 0
-          ? html`<p class="empty">Aún no hay apps.</p>`
-          : html`<div class="table-wrap"><table><thead><tr><th>App</th><th>Webhook</th><th>Cuentas</th><th>Estado</th></tr></thead><tbody>
-              ${apps.map((a) => html`<tr>
-                <td class="t-main"><a href="/apps/${a.id}"><b>${a.name}</b></a><div class="muted small">${a.id}</div></td>
-                <td class="t-wide">${a.webhookUrl ? html`<code>${a.webhookUrl}</code>` : html`<span class="muted">Sin webhook</span>`}</td>
-                <td>${store.accounts.list(a.id).length} cuentas</td>
-                <td>${a.active ? badge("Activa", "ok") : badge("Inactiva", "muted")}</td>
-              </tr>`)}
-            </tbody></table></div>`}
-      </div>
+      ${apps.length === 0
+        ? html`<div class="card"><p class="empty">Aún no hay apps. Crea la primera abajo.</p></div>`
+        : html`<div class="tiles">${apps.map((a) => {
+            const accounts = store.accounts.list(a.id);
+            const keys = store.keys.listForApp(a.id).filter((k) => !k.revokedAt).length;
+            const failed = store.deliveries.list({ appId: a.id, status: "failed", limit: 100 }).length;
+            return html`<a class="tile" href="/apps/${a.id}">
+              <div class="tile-top"><span class="tile-ico">${icon("apps")}</span><div class="tile-title"><b>${a.name}</b><span>${a.id}</span></div>${a.active ? badge("Activa", "ok") : badge("Inactiva", "muted")}</div>
+              <p class="tile-line">${icon("webhook")}<span>${a.webhookUrl ? host(a.webhookUrl) : "Sin webhook"}</span></p>
+              <div class="tile-foot"><span>${accounts.length} ${accounts.length === 1 ? "cuenta" : "cuentas"}</span><span>${keys} API ${keys === 1 ? "key" : "keys"}</span>${failed ? badge(`${failed} entregas fallidas`, "bad") : ""}</div>
+            </a>`;
+          })}</div>`}
       <div class="card">
         <h2>Nueva app</h2>
-        <form method="post" action="/apps" class="stack">
-          ${csrfField(s.session.csrf)}
-          <label>Nombre <input type="text" name="name" required maxlength="60" placeholder="Ej. Ibirifas"></label>
-          <label>URL del webhook <span class="hint">Opcional; se puede poner después. Ej. https://tu-app.com/api/pagoradar/webhook</span><input type="url" name="webhookUrl" maxlength="500"></label>
-          <button class="btn btn-primary" type="submit">Crear app</button>
+        <form method="post" action="/apps" class="inline-form">
+          ${csrfField(csrf)}
+          <label>Nombre <input type="text" name="name" required maxlength="60" placeholder="Ej. Tienda online"></label>
+          <label class="wide">URL del webhook <span class="hint">Opcional; se puede poner después.</span><input type="url" name="webhookUrl" maxlength="500" placeholder="https://tu-app.com/api/pagoradar/webhook"></label>
+          <button class="btn btn-primary" type="submit">${icon("plus")}<span>Crear app</span></button>
         </form>
       </div>`,
   });
@@ -552,59 +568,54 @@ function appPage(s, id, { error = null, newKey = null, secretShown = null } = {}
   const keys = store.keys.listForApp(id);
   const accounts = store.accounts.list(id);
   const deliveries = store.deliveries.list({ appId: id, limit: 30 });
+  const delivered = deliveries.filter((d) => d.status === "delivered").length;
+  const failed = deliveries.filter((d) => d.status === "failed").length;
   const csrf = s.session.csrf;
   return page(s, {
     title: app.name,
     active: "/apps",
     status: error ? 400 : 200,
     body: html`
-      <div class="head"><div><h1>${app.name}</h1><p class="muted">${app.id}</p></div><a href="/apps">← Apps</a></div>
+      <div class="head"><a class="back" href="/apps">← Apps</a><div><h1>${app.name} ${app.active ? badge("Activa", "ok") : badge("Inactiva", "muted")}</h1><p class="muted"><code>${app.id}</code></p></div>
+        ${postButton(`/apps/${id}/test`, html`${icon("send")}<span>Enviar evento de prueba</span>`, csrf)}</div>
       ${msg(s)}${flash(error, "bad")}
       ${newKey ? html`<div class="secret card"><h2>Tu nueva API key</h2><p>Cópiala ahora: <b>no se volverá a mostrar</b>.</p><p>${copyable(newKey)}</p></div>` : ""}
-      <div class="two">
-        <div class="card">
-          <h2>Webhook</h2>
-          <form method="post" action="/apps/${id}" class="stack">
-            ${csrfField(csrf)}
+      <div class="grid grid-3">
+        <a class="stat" href="#cuentas"><span class="stat-ico">${icon("accounts")}</span><span class="stat-label">Cuentas receptoras</span><b>${accounts.length}</b></a>
+        <div class="stat"><span class="stat-ico">${icon("send")}</span><span class="stat-label">Entregas recientes</span><b>${delivered}</b><span class="stat-sub">${deliveries.length ? `de las últimas ${deliveries.length} llegaron` : "aún no hay entregas"}</span></div>
+        <div class="stat${failed ? " stat-warn" : ""}"><span class="stat-ico">${icon("alert")}</span><span class="stat-label">Fallidas</span><b>${failed}</b><span class="stat-sub">${failed ? "revisa la URL y reintenta" : "todo bien"}</span></div>
+      </div>
+      <div class="card">
+        <form method="post" action="/apps/${id}">
+          ${csrfField(csrf)}
+          ${section("Webhook", "A dónde enviamos cada pago y cada cobro, firmado con el secreto de abajo.", html`
             <label>Nombre <input type="text" name="name" value="${app.name}" required maxlength="60"></label>
             <label>URL del webhook <input type="url" name="webhookUrl" value="${app.webhookUrl ?? ""}" maxlength="500" placeholder="https://tu-app.com/api/pagoradar/webhook"></label>
-            <div class="checks"><label><input type="checkbox" name="active" value="1"${app.active ? raw(" checked") : ""}> App activa (si no, sus API keys dejan de funcionar y no recibe avisos)</label></div>
-            <button class="btn btn-primary" type="submit">Guardar</button>
-          </form>
-          <hr class="sep">
-          <p><b>Secreto para verificar la firma</b> <span class="muted small">(cabecera Pagoradar-Signature)</span></p>
+            ${toggle("active", app.active, "App activa", "Si la apagas, sus API keys dejan de funcionar y no recibe avisos.")}`)}
+          <div class="form-actions"><button class="btn btn-primary" type="submit">Guardar cambios</button></div>
+        </form>
+        ${section("Secreto de la firma", html`Tu app lo usa para verificar la cabecera <code>Pagoradar-Signature</code>.`, html`
           ${secretShown
             ? html`<div class="secret">${copyable(secretShown)}</div>`
-            : html`<details><summary>Mostrar secreto</summary><p>${copyable(store.apps.secret(id))}</p></details>`}
-          <div class="row mt">
-            ${postButton(`/apps/${id}/test`, "Enviar evento de prueba", csrf)}
-            ${postButton(`/apps/${id}/rotate`, "Cambiar secreto", csrf, { tone: "danger", confirm: "¿Cambiar el secreto? Tu app dejará de aceptar los avisos hasta que pongas el nuevo." })}
-          </div>
-        </div>
-        <div class="card">
-          <h2>API keys</h2>
-          <p class="muted small">Para que tu app consulte pagos y cree cuentas o cobros (Authorization: Bearer …).</p>
+            : html`<details class="reveal"><summary>Mostrar secreto</summary><div class="mt">${copyable(store.apps.secret(id))}</div></details>`}
+          <div>${postButton(`/apps/${id}/rotate`, "Cambiar secreto", csrf, { tone: "danger", small: true, confirm: "¿Cambiar el secreto? Tu app dejará de aceptar los avisos hasta que pongas el nuevo." })}</div>`)}
+        ${section("API keys", "Para que tu app consulte pagos y cree cuentas o cobros (Authorization: Bearer …).", html`
           ${keys.length
-            ? html`<div class="table-wrap"><table><thead><tr><th>Nombre</th><th>Key</th><th>Último uso</th><th></th></tr></thead><tbody>
-              ${keys.map((k) => html`<tr>
-                <td class="t-main">${k.name}<div class="muted small">${fmtDate(k.createdAt)}</div></td>
-                <td><code>${k.prefix}…</code></td>
-                <td>${k.revokedAt ? badge("Revocada", "muted") : fmtDate(k.lastUsedAt)}</td>
-                <td class="t-act">${k.revokedAt ? "" : postButton(`/apps/${id}/keys/${k.id}/revoke`, "Revocar", csrf, { tone: "danger", confirm: "¿Revocar esta API key? Lo que la use dejará de funcionar." })}</td>
-              </tr>`)}</tbody></table></div>`
-            : html`<p class="empty">Sin API keys.</p>`}
-          <form method="post" action="/apps/${id}/keys" class="row mt">
+            ? html`<ul class="list">${keys.map((k) => html`<li>
+                <span class="list-ico">${icon("key")}</span>
+                <div class="list-main"><b>${k.name}</b><span><code>${k.prefix}…</code> · creada ${fmtDate(k.createdAt)}${k.revokedAt ? "" : ` · último uso ${k.lastUsedAt ? fmtAgo(k.lastUsedAt) : "nunca"}`}</span></div>
+                ${k.revokedAt ? badge("Revocada", "muted") : postButton(`/apps/${id}/keys/${k.id}/revoke`, "Revocar", csrf, { tone: "danger", small: true, confirm: "¿Revocar esta API key? Lo que la use dejará de funcionar." })}
+              </li>`)}</ul>`
+            : html`<p class="muted small">Sin API keys todavía.</p>`}
+          <form method="post" action="/apps/${id}/keys" class="input-group">
             ${csrfField(csrf)}
-            <input type="text" name="name" placeholder="Nombre (ej. producción)" maxlength="60" required class="grow">
-            <button class="btn" type="submit">Crear API key</button>
-          </form>
-        </div>
+            <input type="text" name="name" placeholder="Nombre de la nueva key (ej. producción)" maxlength="60" required aria-label="Nombre de la nueva API key">
+            <button class="btn" type="submit">${icon("plus")}<span>Crear API key</span></button>
+          </form>`)}
       </div>
-      <div class="card">
-        <div class="head"><h2>Cuentas receptoras</h2><a class="btn btn-small" href="/accounts/new?app=${id}">Nueva cuenta</a></div>
-        ${accountsTable(accounts, { [id]: app.name })}
-      </div>
-      <div class="card">
+      <div class="section-head" id="cuentas"><h2>Cuentas receptoras</h2><a class="btn btn-small" href="/accounts/new?app=${id}">${icon("plus")}<span>Nueva cuenta</span></a></div>
+      ${accountCards(accounts, { [id]: app.name })}
+      <div class="card mt">
         <h2>Entregas del webhook</h2>
         ${deliveries.length === 0
           ? html`<p class="empty">Todavía no hay entregas.</p>`
@@ -615,7 +626,7 @@ function appPage(s, id, { error = null, newKey = null, secretShown = null } = {}
               <td>${d.status === "delivered" ? badge("Entregado", "ok") : d.status === "failed" ? badge("Fallido", "bad") : badge("Pendiente", "warn")}</td>
               <td>${d.attempts} ${d.attempts === 1 ? "intento" : "intentos"}</td>
               <td class="t-wide">${d.last_status ? `HTTP ${d.last_status}` : ""}${d.last_error ? html`<div class="muted small">${d.last_error}</div>` : ""}${d.status === "pending" && d.attempts ? html`<div class="muted small">Próximo: ${fmtDate(d.next_attempt_at)}</div>` : ""}</td>
-              <td class="t-act">${d.status !== "delivered" ? postButton(`/deliveries/${d.id}/retry`, "Reintentar", csrf, { fields: { back: `/apps/${id}` } }) : ""}</td>
+              <td class="t-act">${d.status !== "delivered" ? postButton(`/deliveries/${d.id}/retry`, "Reintentar", csrf, { small: true, fields: { back: `/apps/${id}` } }) : ""}</td>
             </tr>`)}</tbody></table></div>`}
       </div>`,
   });
@@ -669,28 +680,48 @@ async function retryDelivery(s, id) {
 
 // ---------- receiving accounts
 
-function accountsTable(accounts, appName) {
-  if (accounts.length === 0) return html`<p class="empty">Sin cuentas receptoras.</p>`;
-  return html`<div class="table-wrap"><table><thead><tr><th>Cuenta</th><th>Dirección</th><th>App</th><th>Estado</th><th>Actividad</th></tr></thead><tbody>
-    ${accounts.map((a) => html`<tr>
-      <td class="t-main"><a href="/accounts/${a.id}"><b>${a.name}</b></a>${a.tenantRef ? html`<div class="muted small">Cliente: ${a.tenantRef}</div>` : ""}</td>
-      <td class="t-wide"><code>${a.address}</code></td>
-      <td>${appName[a.appId] ?? a.appId}</td>
-      <td>${accountStatus(a.status)}</td>
-      <td>${a.lastPaymentAt ? `Último pago ${fmtDate(a.lastPaymentAt)}` : "Sin pagos"}</td>
-    </tr>`)}</tbody></table></div>`;
+function accountCards(accounts, appName) {
+  if (accounts.length === 0) return html`<div class="card"><p class="empty">Sin cuentas receptoras.</p></div>`;
+  return html`<div class="tiles">${accounts.map((a) => html`<a class="tile${a.status === "disabled" ? " tile-off" : ""}" href="/accounts/${a.id}">
+    <div class="tile-top"><span class="tile-ico">${icon("accounts")}</span><div class="tile-title"><b>${a.name}</b><span>${appName[a.appId] ?? a.appId}${a.tenantRef ? ` · cliente ${a.tenantRef}` : ""}</span></div></div>
+    <p class="tile-line">${icon("inbox")}<code>${a.address}</code></p>
+    <span class="bank-tags">${a.banks.map((b) => html`<span>${BANK_LABEL[b] ?? b}</span>`)}</span>
+    <div class="tile-foot">${accountStatus(a.status)}<span>${a.lastPaymentAt ? `Último pago ${fmtAgo(a.lastPaymentAt)}` : "Sin pagos aún"}</span></div>
+  </a>`)}</div>`;
 }
 
 function accountsPage(s) {
   const { store } = s.ctx;
-  const appName = Object.fromEntries(store.apps.list().map((a) => [a.id, a.name]));
+  const q = s.url.searchParams;
+  const apps = store.apps.list();
+  const appName = Object.fromEntries(apps.map((a) => [a.id, a.name]));
+  const status = ["active", "pending", "disabled"].includes(q.get("status")) ? q.get("status") : null;
+  const text = q.get("q")?.trim().toLowerCase() ?? "";
+  const base = store.accounts.list().filter(
+    (a) => (!q.get("app") || a.appId === q.get("app")) && (!text || [a.name, a.address, a.tenantRef ?? "", ...a.ownerEmails].some((v) => v.toLowerCase().includes(text))),
+  );
+  const count = (st) => base.filter((a) => a.status === st).length;
+  const shown = status ? base.filter((a) => a.status === status) : base;
   return page(s, {
     title: "Cuentas receptoras",
     active: "/accounts",
     body: html`
-      <div class="head"><div><h1>Cuentas receptoras</h1><p class="muted">Cada cuenta bancaria que reenvía sus avisos a una dirección de pagoradar.</p></div><a class="btn btn-primary" href="/accounts/new">Nueva cuenta</a></div>
+      <div class="head"><div><h1>Cuentas receptoras</h1><p class="muted">Cada cuenta bancaria que reenvía sus avisos a una dirección de pagoradar.</p></div><a class="btn btn-primary" href="/accounts/new">${icon("plus")}<span>Nueva cuenta</span></a></div>
       ${msg(s)}
-      <div class="card">${accountsTable(store.accounts.list(), appName)}</div>`,
+      ${filterBar(s, {
+        rows: [
+          html`${searchBox("q", "Buscar nombre, dirección, correo o cliente", q.get("q"))}
+            ${apps.length > 1 ? html`<div class="pills">${pillSelect("app", "App", "Todas las apps", apps.map((a) => [a.id, a.name]), q.get("app"))}</div>` : ""}
+            ${status ? html`<input type="hidden" name="status" value="${status}">` : ""}`,
+          segmented("Estado", [
+            ["Todas", withParams(s, { status: null }), !status, base.length],
+            ["Activas", withParams(s, { status: "active" }), status === "active", count("active")],
+            ["Esperando configuración", withParams(s, { status: "pending" }), status === "pending", count("pending")],
+            ["Desactivadas", withParams(s, { status: "disabled" }), status === "disabled", count("disabled")],
+          ]),
+        ],
+      })}
+      ${shown.length === 0 && (status || text || q.get("app")) ? html`<div class="card"><p class="empty">Ninguna cuenta con estos filtros. <a href="/accounts">Ver todas</a></p></div>` : accountCards(shown, appName)}`,
   });
 }
 
@@ -708,21 +739,21 @@ function newAccountPage(s, { error = null, values = {} } = {}) {
     active: "/accounts",
     status: error ? 400 : 200,
     body: html`
-      <div class="head"><div><h1>Nueva cuenta receptora</h1><p class="muted">pagoradar le dará una dirección; el Gmail del dueño reenviará ahí los avisos del banco.</p></div><a href="/accounts">← Cuentas</a></div>
+      <div class="head"><a class="back" href="/accounts">← Cuentas</a><div><h1>Nueva cuenta receptora</h1><p class="muted">pagoradar le dará una dirección; el Gmail del dueño reenviará ahí los avisos del banco.</p></div></div>
       ${flash(error, "bad")}
       ${!domain ? flash(html`Primero configura el dominio de recepción en <a href="/settings">Ajustes</a>.`, "warn") : ""}
       ${apps.length === 0 ? flash(html`Primero crea una <a href="/apps">app</a>.`, "warn") : ""}
-      <div class="card">
-        <form method="post" action="/accounts" class="stack">
-          ${csrfField(s.session.csrf)}
+      <form method="post" action="/accounts" class="card">
+        ${csrfField(s.session.csrf)}
+        ${section("La cuenta", "A qué app pertenece y cómo la vas a reconocer.", html`
           <label>App <select name="appId" required>${apps.map((a) => html`<option value="${a.id}"${a.id === selectedApp ? raw(" selected") : ""}>${a.name}</option>`)}</select></label>
-          <label>Nombre <span class="hint">Para reconocerla, ej. "Nequi Negocios de Ana".</span><input type="text" name="name" required maxlength="60" value="${values.name ?? ""}"></label>
-          <label>Correos donde el banco avisa <span class="hint">El Gmail del dueño de la cuenta (uno por línea). Un aviso dirigido a otro correo se rechaza.</span><textarea name="ownerEmails" required>${values.ownerEmails ?? ""}</textarea></label>
-          <div><b class="small">Bancos</b>${bankChecks(values.banks ?? BANK_IDS)}</div>
-          <label>Id del cliente en tu app <span class="hint">Opcional: a quién pertenece en tu app (ej. el id de la organización). Llega en cada aviso.</span><input type="text" name="tenantRef" maxlength="120" value="${values.tenantRef ?? ""}"></label>
-          <button class="btn btn-primary" type="submit"${!domain || apps.length === 0 ? raw(" disabled") : ""}>Crear cuenta</button>
-        </form>
-      </div>`,
+          <label>Nombre <span class="hint">Ej. "Nequi Negocios de Ana".</span><input type="text" name="name" required maxlength="60" value="${values.name ?? ""}" placeholder="Nequi Negocios de Ana"></label>
+          <label>Id del cliente en tu app <span class="hint">Opcional: a quién pertenece en tu app (ej. el id de la organización). Llega en cada aviso.</span><input type="text" name="tenantRef" maxlength="120" value="${values.tenantRef ?? ""}" placeholder="org_42"></label>`)}
+        ${section("Avisos del banco", "Solo se aceptan avisos dirigidos a estos correos y firmados por estos bancos.", html`
+          <label>Correos donde el banco avisa <span class="hint">El Gmail del dueño de la cuenta, uno por línea.</span><textarea name="ownerEmails" required rows="2" placeholder="dueno@gmail.com">${values.ownerEmails ?? ""}</textarea></label>
+          <div class="field"><span class="field-label">Bancos</span>${bankChecks(values.banks ?? BANK_IDS)}</div>`)}
+        <div class="form-actions"><a class="btn btn-ghost" href="/accounts">Cancelar</a><button class="btn btn-primary" type="submit"${!domain || apps.length === 0 ? raw(" disabled") : ""}>Crear cuenta</button></div>
+      </form>`,
   });
 }
 
@@ -772,14 +803,15 @@ function accountPage(s, id, { error = null } = {}) {
     status: error ? 400 : 200,
     body: html`
       ${waiting ? raw('<span data-autorefresh="15" hidden></span>') : ""}
-      <div class="head"><div><h1>${a.name}</h1><p class="muted">${app ? html`App <a href="/apps/${app.id}">${app.name}</a>` : a.appId} · ${accountStatus(a.status)}</p></div><a href="/accounts">← Cuentas</a></div>
+      <div class="head"><a class="back" href="/accounts">← Cuentas</a><div><h1>${a.name} ${accountStatus(a.status)}</h1><p class="muted">${app ? html`App <a href="/apps/${app.id}">${app.name}</a>` : a.appId}${a.tenantRef ? ` · cliente ${a.tenantRef}` : ""}</p></div></div>
       ${msg(s)}${flash(error, "bad")}
       <div class="card">
-        <h2>Dirección de recepción</h2>
-        <p>${copyable(a.address)}</p>
-      </div>
-      <div class="card">
-        <h2>Configurar el Gmail del dueño (${a.ownerEmails.join(", ")})</h2>
+        <div class="addr">
+          <div><span class="stat-label">Dirección de recepción</span><p class="muted small">El Gmail de ${a.ownerEmails.join(", ")} reenvía aquí los avisos del banco.</p></div>
+          ${copyable(a.address)}
+        </div>
+        ${a.status === "active"
+          ? html`<details class="setup"><summary>${badge("Conectada", "ok")} Recibiendo avisos · último ${fmtAgo(a.lastEmailAt)} <span class="muted small">· ver pasos de configuración</span></summary>
         <ol class="steps">
           <li>Gmail → ⚙️ <b>Ver toda la configuración</b> → <b>Reenvío y correo POP/IMAP</b> → <b>Agregar una dirección de reenvío</b>: ${copyable(a.address)}</li>
           <li>Gmail manda un código de confirmación a esa dirección; aparece aquí:
@@ -793,30 +825,53 @@ function accountPage(s, id, { error = null } = {}) {
             ? html`${badge("Listo", "ok")} Recibiendo avisos (último: ${fmtDate(a.lastEmailAt)}).`
             : html`Haz un pago pequeño de prueba: cuando llegue el primer aviso válido, la cuenta pasa a <b>Activa</b>.`}</li>
         </ol>
+        </details>`
+          : html`<h2 class="mt">Configurar el Gmail del dueño</h2>
+        <ol class="steps">
+          <li>Gmail → ⚙️ <b>Ver toda la configuración</b> → <b>Reenvío y correo POP/IMAP</b> → <b>Agregar una dirección de reenvío</b>: ${copyable(a.address)}</li>
+          <li>Gmail manda un código de confirmación a esa dirección; aparece aquí:
+            ${a.confirmationCode || a.confirmationLink
+              ? html`<div class="secret mt">${a.confirmationCode ? html`<p>Código: <b class="big">${a.confirmationCode}</b></p>` : ""}${a.confirmationLink ? html`<p class="small">O abre este enlace con la sesión de Gmail iniciada: <a href="${a.confirmationLink}" target="_blank" rel="noopener noreferrer">confirmar reenvío</a></p>` : ""}<p class="muted small">Recibido ${fmtDate(a.confirmationAt)}</p></div>`
+              : html`<p class="muted">Esperando el correo de Gmail… (la página se actualiza sola)</p>`}
+            <p class="small muted">Deja marcado "Inhabilitar reenvío": solo se reenvía con el filtro del siguiente paso.</p>
+          </li>
+          <li>Crea un filtro: en <b>De</b> pega ${copyable(senders)} → <b>Crear filtro</b> → <b>Reenviarlo a</b> la dirección de arriba.</li>
+          <li>${a.status === "active"
+            ? html`${badge("Listo", "ok")} Recibiendo avisos (último: ${fmtDate(a.lastEmailAt)}).`
+            : html`Haz un pago pequeño de prueba: cuando llegue el primer aviso válido, la cuenta pasa a <b>Activa</b>.`}</li>
+        </ol>`}
       </div>
+      <form method="post" action="/accounts/${id}" class="card">
+        ${csrfField(csrf)}
+        ${section("La cuenta", "Cómo la reconoces y a qué cliente de tu app pertenece.", html`
+          <label>Nombre <input type="text" name="name" value="${a.name}" required maxlength="60"></label>
+          <label>Id del cliente en tu app <span class="hint">Opcional. Llega en cada aviso como <code>tenantRef</code>.</span><input type="text" name="tenantRef" value="${a.tenantRef ?? ""}" maxlength="120"></label>`)}
+        ${section("Avisos del banco", "Solo se aceptan avisos dirigidos a estos correos y firmados por estos bancos.", html`
+          <label>Correos donde el banco avisa <span class="hint">Uno por línea.</span><textarea name="ownerEmails" required rows="2">${a.ownerEmails.join("\n")}</textarea></label>
+          <div class="field"><span class="field-label">Bancos</span>${bankChecks(a.banks)}</div>`)}
+        ${section("Página de pago", "Lo que ven tus clientes cuando les envías un cobro.", html`
+          <label>Llave Bre-B para cobros <span class="hint">Celular, @llave, correo…</span><input type="text" name="payKey" value="${a.payKey ?? ""}" maxlength="80" placeholder="@mitienda"></label>
+          <label>Titular que ven los clientes <input type="text" name="payHolder" value="${a.payHolder ?? ""}" maxlength="80" placeholder="Nombre del titular"></label>`)}
+        <div class="form-actions"><button class="btn btn-primary" type="submit">Guardar cambios</button></div>
+      </form>
       <div class="two">
-        <div class="card">
-          <h2>Datos de la cuenta</h2>
-          <form method="post" action="/accounts/${id}" class="stack">
-            ${csrfField(csrf)}
-            <label>Nombre <input type="text" name="name" value="${a.name}" required maxlength="60"></label>
-            <label>Correos donde el banco avisa <textarea name="ownerEmails" required>${a.ownerEmails.join("\n")}</textarea></label>
-            <div><b class="small">Bancos</b>${bankChecks(a.banks)}</div>
-            <label>Id del cliente en tu app <input type="text" name="tenantRef" value="${a.tenantRef ?? ""}" maxlength="120"></label>
-            <label>Llave Bre-B para cobros <span class="hint">Opcional: la que ven los clientes en la página de pago (celular, @llave, correo…).</span><input type="text" name="payKey" value="${a.payKey ?? ""}" maxlength="80"></label>
-            <label>Titular que ven los clientes <input type="text" name="payHolder" value="${a.payHolder ?? ""}" maxlength="80"></label>
-            <button class="btn btn-primary" type="submit">Guardar</button>
-          </form>
-          <div class="row mt">
-            ${postButton(`/accounts/${id}/toggle`, a.status === "disabled" ? "Activar" : "Desactivar", csrf, a.status === "disabled" ? {} : { tone: "danger", confirm: "¿Desactivar? Sus avisos se rechazarán hasta que la actives." })}
-            ${recent.length === 0 ? postButton(`/accounts/${id}/delete`, "Eliminar", csrf, { tone: "danger", confirm: "¿Eliminar esta cuenta receptora?" }) : ""}
-          </div>
-        </div>
         <div class="card" data-eml-check="/accounts/${id}/check" data-csrf="${csrf}">
           <h2>Probar un aviso</h2>
           <p class="muted small">Sube un aviso del banco (.eml: en Gmail, ⋮ → Descargar mensaje) y mira qué leería pagoradar para esta cuenta. No guarda nada.</p>
           <label class="drop">${icon("upload")}<span><b>Elegir un aviso (.eml)</b><span class="muted small">o arrástralo aquí</span></span><input type="file" accept=".eml,message/rfc822"></label>
           <pre hidden></pre>
+        </div>
+        <div class="card danger-zone">
+          <h2>${a.status === "disabled" ? "Cuenta desactivada" : "Desactivar o eliminar"}</h2>
+          <p class="muted small">${a.status === "disabled"
+            ? "Sus avisos se rechazan. Actívala para volver a recibirlos."
+            : recent.length === 0
+              ? "Desactivada, sus avisos se rechazan. Como aún no tiene pagos, también la puedes eliminar."
+              : "Desactivada, sus avisos se rechazan. Tiene pagos, así que no se puede eliminar."}</p>
+          <div class="row mt">
+            ${postButton(`/accounts/${id}/toggle`, a.status === "disabled" ? "Activar" : "Desactivar", csrf, a.status === "disabled" ? { tone: "primary" } : { tone: "danger", confirm: "¿Desactivar? Sus avisos se rechazarán hasta que la actives." })}
+            ${recent.length === 0 ? postButton(`/accounts/${id}/delete`, "Eliminar", csrf, { tone: "danger", confirm: "¿Eliminar esta cuenta receptora?" }) : ""}
+          </div>
         </div>
       </div>
       <div class="card"><h2>Últimos pagos</h2>${paymentsTable(recent, app ? { [app.id]: app.name } : {}, store)}</div>
@@ -1069,12 +1124,14 @@ function cancelCharge(s, id) {
   return redirect(s.res, "/charges?ok=canceled");
 }
 
+const REASON_TONE = { dkim_failed: "bad", weak_signature: "bad", not_owner: "bad", ambiguous_headers: "bad", unrecognized: "warn", unreadable: "warn", dkim_error: "warn", gmail_forwarding_confirmation: "ok" };
+
 function inboxTable(rows) {
   if (rows.length === 0) return html`<p class="empty">Nada por aquí.</p>`;
   return html`<div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Motivo</th><th>De</th><th>Asunto</th></tr></thead><tbody>
     ${rows.map((r) => html`<tr>
       <td class="t-date">${fmtDate(r.received_at)}</td>
-      <td class="t-main">${REASON_LABEL[r.reason] ?? r.reason}${r.code ? html`<div>Código: <b>${r.code}</b></div>` : ""}</td>
+      <td class="t-main">${badge(REASON_LABEL[r.reason] ?? r.reason, REASON_TONE[r.reason] ?? "muted")}${r.code ? html`<div class="mt">Código: <b>${r.code}</b></div>` : ""}</td>
       <td>${r.from_addr ?? ""}</td>
       <td class="t-wide">${r.subject ?? ""}${r.snippet ? html`<details><summary>Ver texto</summary><pre>${r.snippet}</pre></details>` : ""}</td>
     </tr>`)}</tbody></table></div>`;
@@ -1102,36 +1159,30 @@ function settingsPage(s, { error = null, tempPassword = null } = {}) {
     active: "/settings",
     status: error ? 400 : 200,
     body: html`
-      <div class="head"><div><h1>Ajustes</h1></div><a href="/audit">Registro de cambios →</a></div>
+      <div class="head"><div><h1>Ajustes</h1><p class="muted">Recepción de correos, retención de datos y quién administra pagoradar.</p></div><a class="btn btn-small" href="/audit">${icon("audit")}<span>Registro de cambios</span></a></div>
       ${msg(s)}${flash(error, "bad")}
       ${tempPassword ? html`<div class="secret card"><h2>Contraseña temporal</h2><p>Dásela a la persona por un canal seguro; tendrá que cambiarla y configurar su código de 2 pasos al entrar. <b>No se volverá a mostrar.</b></p><p>${copyable(tempPassword)}</p></div>` : ""}
-      <div class="two">
-        <div class="card">
-          <h2>Recepción de correos</h2>
-          <form method="post" action="/settings" class="stack">
+      <form method="post" action="/settings" class="card">
+        ${csrfField(csrf)}
+        ${section("Recepción de correos", html`En Cloudflare → Email Routing de ${domain ?? "tu dominio"}: una regla <b>Catch-all</b> con acción <b>Send to a Worker</b> → tu Worker de pagoradar. Así cada cuenta nueva funciona sin tocar Cloudflare.`, html`
+          <label>Dominio de recepción <span class="hint">Las cuentas nuevas reciben en <code>algo@dominio</code>.</span><input type="text" name="inboundDomain" value="${domain ?? ""}" pattern="[a-z0-9.-]+\\.[a-z]{2,}" required placeholder="pagos.tudominio.com"></label>`)}
+        ${section("Datos", "Los correos rechazados se guardan 7 días; las entregas, 30.", html`
+          <label>Días que se guardan los pagos <span class="hint">Entre 30 y 3650.</span><input type="number" name="retentionDays" min="30" max="3650" value="${store.settings.get("retention_days", String(config.retentionDays ?? 180))}"></label>`)}
+        <div class="form-actions"><button class="btn btn-primary" type="submit">Guardar cambios</button></div>
+      </form>
+      <div class="card">
+        ${section("Administradores", "Cada uno entra con su correo, su contraseña y su código de 2 pasos.", html`
+          <ul class="list">${admins.map((a) => html`<li>
+            <span class="list-ico">${icon("user")}</span>
+            <div class="list-main"><b>${a.name || a.email}</b><span>${a.name ? `${a.email} · ` : ""}último ingreso ${a.lastLoginAt ? fmtAgo(a.lastLoginAt) : "nunca"}</span></div>
+            ${a.totpEnabled ? badge("2 pasos", "ok") : badge("Sin 2 pasos", "warn")}
+            ${a.id === s.admin.id ? html`<span class="muted small">Tú</span>` : postButton(`/settings/admins/${a.id}/delete`, "Quitar", csrf, { tone: "danger", small: true, confirm: `¿Quitar a ${a.email}?` })}
+          </li>`)}</ul>
+          <form method="post" action="/settings/admins" class="input-group">
             ${csrfField(csrf)}
-            <label>Dominio de recepción <span class="hint">Las cuentas nuevas reciben en <code>algo@dominio</code>. Ej. pagos.edwsystem.com</span><input type="text" name="inboundDomain" value="${domain ?? ""}" pattern="[a-z0-9.-]+\\.[a-z]{2,}" required></label>
-            <label>Días que se guardan los pagos <input type="number" name="retentionDays" min="30" max="3650" value="${store.settings.get("retention_days", String(config.retentionDays))}"></label>
-            <button class="btn btn-primary" type="submit">Guardar</button>
-          </form>
-          <p class="muted small mt">En Cloudflare → Email Routing de ${domain ?? "tu dominio"}: una regla <b>Catch-all</b> con acción <b>Send to a Worker</b> → tu Worker de pagoradar. Así cada cuenta nueva funciona sin tocar Cloudflare.</p>
-        </div>
-        <div class="card">
-          <h2>Administradores</h2>
-          <div class="table-wrap"><table><thead><tr><th>Correo</th><th>2 pasos</th><th>Último ingreso</th><th></th></tr></thead><tbody>
-            ${admins.map((a) => html`<tr>
-              <td class="t-main">${a.email}${a.name ? html`<div class="muted small">${a.name}</div>` : ""}</td>
-              <td>${a.totpEnabled ? badge("Activo", "ok") : badge("Pendiente", "warn")}</td>
-              <td>${fmtDate(a.lastLoginAt)}</td>
-              <td class="t-act">${a.id === s.admin.id ? html`<span class="muted small">Tú</span>` : postButton(`/settings/admins/${a.id}/delete`, "Quitar", csrf, { tone: "danger", confirm: `¿Quitar a ${a.email}?` })}</td>
-            </tr>`)}
-          </tbody></table></div>
-          <form method="post" action="/settings/admins" class="row mt">
-            ${csrfField(csrf)}
-            <input type="email" name="email" placeholder="correo@ejemplo.com" required class="grow">
-            <button class="btn" type="submit">Agregar administrador</button>
-          </form>
-        </div>
+            <input type="email" name="email" placeholder="correo@ejemplo.com" required aria-label="Correo del nuevo administrador">
+            <button class="btn" type="submit">${icon("plus")}<span>Agregar administrador</span></button>
+          </form>`)}
       </div>`,
   });
 }
@@ -1180,29 +1231,24 @@ function mePage(s, { error = null } = {}) {
       <div class="head"><div><h1>Mi cuenta</h1><p class="muted">${s.admin.email}</p></div></div>
       ${msg(s)}${flash(error, "bad")}
       ${first ? flash("Antes de seguir, cambia la contraseña temporal.", "warn") : ""}
-      <div class="two">
-        <div class="card">
-          <h2>Cambiar contraseña</h2>
-          <form method="post" action="/me/password" class="stack">
-            ${csrfField(csrf)}
-            <label>Contraseña actual <input type="password" name="current" required autocomplete="current-password"></label>
-            <label>Nueva contraseña <span class="hint">Mínimo ${MIN_PASSWORD} caracteres.</span><input type="password" name="password" required minlength="${MIN_PASSWORD}" autocomplete="new-password"></label>
+      <form method="post" action="/me/password" class="card">
+        ${csrfField(csrf)}
+        ${section("Contraseña", `Mínimo ${MIN_PASSWORD} caracteres. Al cambiarla se cierran tus otras sesiones.`, html`
+          <label>Contraseña actual <input type="password" name="current" required autocomplete="current-password"></label>
+          <div class="field-pair">
+            <label>Nueva contraseña <input type="password" name="password" required minlength="${MIN_PASSWORD}" autocomplete="new-password"></label>
             <label>Repite la nueva <input type="password" name="password2" required autocomplete="new-password"></label>
-            <button class="btn btn-primary" type="submit">Cambiar contraseña</button>
-          </form>
-        </div>
-        ${first
-          ? ""
-          : html`<div class="card">
-          <h2>Código de 2 pasos</h2>
-          <p class="muted small">¿Cambiaste de celular? Escribe un código actual y configura la app autenticadora de nuevo.</p>
-          <form method="post" action="/me/totp-reset" class="stack">
-            ${csrfField(csrf)}
-            <label>Código actual <input type="text" name="code" inputmode="numeric" maxlength="7" required autocomplete="one-time-code"></label>
-            <button class="btn" type="submit">Configurar de nuevo</button>
-          </form>
-        </div>`}
-      </div>`,
+          </div>`)}
+        <div class="form-actions"><button class="btn btn-primary" type="submit">Cambiar contraseña</button></div>
+      </form>
+      ${first
+        ? ""
+        : html`<form method="post" action="/me/totp-reset" class="card">
+        ${csrfField(csrf)}
+        ${section("Código de 2 pasos", "¿Cambiaste de celular? Escribe un código actual y configura la app autenticadora de nuevo.", html`
+          <label>Código actual <input type="text" name="code" inputmode="numeric" maxlength="7" required autocomplete="one-time-code" placeholder="123 456" class="code-input"></label>`)}
+        <div class="form-actions"><button class="btn" type="submit">Configurar de nuevo</button></div>
+      </form>`}`,
   });
 }
 

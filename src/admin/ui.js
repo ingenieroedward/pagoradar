@@ -46,6 +46,17 @@ const money = new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP
 export const fmtMoney = (n) => money.format(n);
 const dt = new Intl.DateTimeFormat("es-CO", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit", timeZone: "America/Bogota" });
 export const fmtDate = (iso) => (iso ? dt.format(new Date(iso)) : "—");
+/** "hace 5 min", "hace 3 h", "hace 2 días" — or the date when it's older than a week. */
+export function fmtAgo(iso) {
+  if (!iso) return "—";
+  const min = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60_000));
+  if (min < 1) return "hace un momento";
+  if (min < 60) return `hace ${min} min`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `hace ${h} h`;
+  const d = Math.round(h / 24);
+  return d <= 7 ? `hace ${d} ${d === 1 ? "día" : "días"}` : fmtDate(iso);
+}
 
 export const BANK_LABEL = { nequi_negocios: "Nequi Negocios", nequi: "Nequi", bancolombia: "Bancolombia" };
 export const REASON_LABEL = {
@@ -79,6 +90,14 @@ export function chargeStatus(status) {
   if (status === "expired") return badge("Vencido", "muted");
   return badge("Cancelado", "muted");
 }
+
+/** A form section: title and explanation on the left (on wide screens), its fields on the right. */
+export const section = (title, desc, body) =>
+  html`<div class="fset"><div class="fset-head"><h3>${title}</h3>${desc ? html`<p>${desc}</p>` : ""}</div><div class="fset-body">${body}</div></div>`;
+
+/** A checkbox drawn as a switch, with a title and a short explanation. */
+export const toggle = (name, checked, title, desc) =>
+  html`<label class="toggle"><input type="checkbox" role="switch" name="${name}" value="1"${checked ? raw(" checked") : ""}><span class="toggle-ui" aria-hidden="true"></span><span class="toggle-text"><b>${title}</b>${desc ? html`<span>${desc}</span>` : ""}</span></label>`;
 
 export const csrfField = (token) => html`<input type="hidden" name="_csrf" value="${token}">`;
 
@@ -116,6 +135,12 @@ const ICON_PATHS = {
   upload: '<path d="M12 16V4M7 9l5-5 5 5M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>',
   download: '<path d="M12 4v12M7 11l5 5 5-5M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  key: '<circle cx="8" cy="15" r="4"/><path d="m10.8 12.2 9.2-9.2M17 6l3 3M15 8l2 2"/>',
+  webhook: '<path d="M18 16.98h-5.99c-1.1 0-1.95.94-2.48 1.9A4 4 0 0 1 2 17c.01-.7.2-1.4.57-2"/><path d="m6 17 3.13-5.78c.53-.97.1-2.18-.5-3.1a4 4 0 1 1 6.89-4.06"/><path d="m12 6 3.13 5.73C15.66 12.7 16.9 13 18 13a4 4 0 0 1 0 8"/>',
+  copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>',
+  send: '<path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/>',
+  trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>',
 };
 export const icon = (name, cls = "ico") =>
   raw(`<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name] ?? ""}</svg>`);
