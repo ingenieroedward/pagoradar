@@ -273,3 +273,13 @@ test("a disabled account can't take charges", async () => {
   await pr.accounts.update(account2.id, { active: false });
   await rejects(pr.charges.create({ account: account2.id, amount: 1000 }), 409);
 });
+
+test("developer docs: public, with this server's URL in the examples", async () => {
+  const res = await fetch(`${base}/docs`);
+  assert.equal(res.status, 200);
+  const page = await res.text();
+  assert.match(page, new RegExp(`${PUBLIC_URL}/v1/charges`));
+  assert.doesNotMatch(page, /\{\{/);
+  assert.equal((await fetch(`${base}/static/docs.css`)).status, 200);
+  assert.equal((await fetch(`${base}/static/docs.js`)).status, 200);
+});
