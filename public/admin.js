@@ -45,3 +45,21 @@ if (checker) {
     input.value = "";
   });
 }
+
+// Drag a .eml onto the drop zone.
+const drop = document.querySelector(".drop");
+if (drop) {
+  const input = drop.querySelector("input[type=file]");
+  for (const ev of ["dragenter", "dragover"]) drop.addEventListener(ev, (e) => (e.preventDefault(), drop.classList.add("over")));
+  for (const ev of ["dragleave", "drop"]) drop.addEventListener(ev, () => drop.classList.remove("over"));
+  drop.addEventListener("drop", (e) => {
+    e.preventDefault();
+    if (!e.dataTransfer?.files?.length) return;
+    input.files = e.dataTransfer.files;
+    input.dispatchEvent(new Event("change"));
+  });
+}
+
+// The "Más" menu closes when tapping outside it.
+const more = document.querySelector("details.more");
+if (more) document.addEventListener("click", (e) => { if (more.open && !more.contains(e.target)) more.open = false; });

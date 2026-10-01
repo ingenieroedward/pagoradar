@@ -495,8 +495,6 @@ export function openStore(path, { masterKey } = {}) {
         amountCents,
         limit,
       ).map(toCharge),
-    countLinkable: (accountId, days = 7) =>
-      one("SELECT COUNT(*) AS n FROM charges WHERE account_id = ? AND (status = 'pending' OR (status IN ('expired','canceled') AND created_at > ?))", accountId, new Date(Date.now() - days * 86400_000).toISOString()).n,
     /**
      * Links the payment; false when the charge was already settled or the payment already pays another charge.
      * `match`: "exact", "approximate" (paid the round amount) or "manual". A canceled charge only by hand.
