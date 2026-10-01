@@ -86,9 +86,15 @@ cambiar el nombre del proyecto en Dokploy no crea uno nuevo). Si al arrancar el 
 # 1. Ver qué volumen tiene los datos (el que tenga pagoradar.db más grande / más antiguo)
 for v in $(docker volume ls -q | grep -i pagoradar); do echo "== $v"; docker run --rm -v "$v":/d alpine ls -la /d; done
 # 2. Detén pagoradar en Dokploy (Stop) y copia ese volumen al de nombre fijo
-docker run --rm -v VOLUMEN_VIEJO:/from -v pagoradar-data:/to alpine sh -c 'rm -f /to/pagoradar.db*; cp -a /from/. /to/'
+docker run --rm -v VOLUMEN_VIEJO:/from -v pagoradar-data:/to alpine sh -c 'rm -f /to/pagoradar.db*; cp -a /from/. /to/ && chown -R 1000:1000 /to'
 # 3. Deploy de nuevo: el log ya no dice "No hay administrador"
 ```
+
+(`chown 1000:1000`: pagoradar corre como el usuario `node` y necesita poder escribir en la carpeta.)
+
+Si el servicio se creó como **Application** (no Docker Compose), el `docker-compose.yml` no aplica: agrega en
+*Advanced → Volumes* un **Volume Mount** `pagoradar-data` → `/app/data`. Sin él, los datos viven dentro del
+contenedor y se borran en cada despliegue.
 
 Los volúmenes viejos se pueden borrar (`docker volume rm …`) cuando confirmes que todo está bien.
 
