@@ -36,7 +36,11 @@ export async function analyzeEmail(raw, { ownerEmails = [], banks = BANK_IDS, re
       text.match(/(?:c[óo]digo|code)[^0-9]{0,60}(\d{6,12})/i)?.[1] ??
       text.match(/\b(\d{9})\b/)?.[1] ??
       null;
-    return { ok: false, reason: "gmail_forwarding_confirmation", code, ...base };
+    // Clicking this link confirms too (Google sends one with or without a code).
+    const link = (mail.html ?? "").match(/https:\/\/(?:mail-settings\.google\.com|mail\.google\.com)\/[^\s"'<>]+/)?.[0]?.replace(/&amp;/g, "&") ??
+      text.match(/https:\/\/(?:mail-settings\.google\.com|mail\.google\.com)\/\S+/)?.[0] ??
+      null;
+    return { ok: false, reason: "gmail_forwarding_confirmation", code, link, ...base };
   }
 
   // Exactly one From and one To: with duplicates, what DKIM signed and what a reader sees can differ.
