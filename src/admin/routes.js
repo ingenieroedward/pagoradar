@@ -46,6 +46,9 @@ const STATIC = {
   ),
 };
 const loginLimit = rateLimiter(10, 15 * 60_000);
+// Computed once at start-up, so even the first login for an unknown email takes as long as any other.
+const dummy = hashPassword(randomToken(16));
+const dummyHash = () => dummy;
 const staticCache = new Map();
 
 const MESSAGES = {
@@ -276,10 +279,13 @@ async function login(s, method) {
     else {
       const found = store.admins.byEmail(form.email ?? "");
       const locked = found?.lockedUntil && new Date(found.lockedUntil) > new Date();
-      const ok = found && !locked && (await verifyPassword(form.password ?? "", found.passwordHash));
+      // Always one password check (against a throwaway hash for unknown emails), so the response time doesn't
+      // tell which emails are admins; and only the right password learns that the account is locked.
+      const passwordOk = await verifyPassword(form.password ?? "", found?.passwordHash ?? (await dummyHash()));
+      const ok = Boolean(found) && !locked && passwordOk;
       if (!ok) {
         if (found && !locked) store.admins.recordFailure(found.id);
-        error = locked ? "Cuenta bloqueada por intentos fallidos. Espera 15 minutos." : "Correo o contraseña incorrectos.";
+        error = locked && passwordOk ? "Cuenta bloqueada por intentos fallidos. Espera 15 minutos." : "Correo o contraseña incorrectos.";
       } else {
         const stage = found.totpEnabled ? "password" : "totp_setup";
         return redirect(s.res, found.totpEnabled ? "/login/2fa" : "/login/2fa/setup", { "Set-Cookie": startSession(s, found.id, stage) });
