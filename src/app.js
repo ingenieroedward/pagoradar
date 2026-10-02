@@ -22,6 +22,9 @@ export function createApp(ctx) {
 
   return async function handle(req, res) {
     try {
+      // On every response: no MIME sniffing, and over HTTPS, HTTPS only from now on (HSTS).
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      if (config.publicUrl?.startsWith("https://")) res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
       const url = new URL(req.url, "http://x");
       const path = url.pathname.replace(/\/+$/, "") || "/";
 

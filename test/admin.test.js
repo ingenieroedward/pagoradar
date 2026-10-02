@@ -299,6 +299,22 @@ test("charges: pay key on the account, list, cancel", async () => {
   assert.match(r.text, /asociado a mano/);
 });
 
+test("login: a locked account only says so to whoever knows the password", async () => {
+  const { hashPassword } = await import("../src/security.js");
+  const locked = store.admins.create({ email: "bloqueado@example.com", passwordHash: await hashPassword("clave-correcta-123") });
+  store.db.prepare("UPDATE admins SET locked_until = ? WHERE id = ?").run(new Date(Date.now() + 600_000).toISOString(), locked.id);
+  const b = browser();
+  await b.req("/login");
+  let r = await b.req("/login", { method: "POST", form: { _csrf: b.csrf(), email: "bloqueado@example.com", password: "otra-clave-xyz" } });
+  assert.match(r.text, /Correo o contraseña incorrectos/);
+  assert.doesNotMatch(r.text, /bloqueada/);
+  r = await b.req("/login", { method: "POST", form: { _csrf: b.csrf(), email: "nadie-existe@example.com", password: "otra-clave-xyz" } });
+  assert.match(r.text, /Correo o contraseña incorrectos/);
+  r = await b.req("/login", { method: "POST", form: { _csrf: b.csrf(), email: "bloqueado@example.com", password: "clave-correcta-123" } });
+  assert.match(r.text, /bloqueada/);
+  store.admins.remove(locked.id);
+});
+
 test("logout ends the session; security headers on pages; foreign origin refused", async () => {
   const b = await loggedIn();
   const r = await b.req("/");
