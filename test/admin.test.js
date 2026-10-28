@@ -162,8 +162,13 @@ test("receiving accounts: generated address, setup guide, Gmail code and first n
   let r = await b.req("/accounts", { method: "POST", form: { _csrf: b.csrf(), appId, name: "Nequi de Ana", ownerEmails: OWNER, banks: "nequi_negocios" } });
   assert.equal(r.status, 400, "no inbound domain yet");
   assert.match(r.text, /dominio de recepción/);
-  await b.req("/settings");
-  r = await b.req("/settings", { method: "POST", form: { _csrf: b.csrf(), inboundDomain: "pagos.example.com", retentionDays: "180" } });
+  await b.req("/domains");
+  r = await b.req("/domains", { method: "POST", form: { _csrf: b.csrf(), name: "no es dominio" } });
+  assert.equal(r.status, 400);
+  r = await b.req("/domains", { method: "POST", form: { _csrf: b.csrf(), name: "Pagos.Example.com" } });
+  assert.equal(r.location, "/domains/pagos.example.com?ok=created");
+  assert.equal(store.settings.get("inbound_domain"), "pagos.example.com", "the first domain is the default");
+  r = await b.req("/settings", { method: "POST", form: { _csrf: b.csrf(), retentionDays: "180" } });
   assert.equal(r.location, "/settings?ok=saved");
   await b.req("/accounts/new");
   r = await b.req("/accounts", { method: "POST", form: { _csrf: b.csrf(), appId, name: "Nequi de Ana", ownerEmails: "no-es-correo", banks: "nequi_negocios" } });
@@ -243,7 +248,7 @@ test("API key revoke, app deactivation, rotating the webhook secret", async () =
 test("other admins: temporary password, must change it and set up 2-step; audit log", async () => {
   const b = await loggedIn();
   await b.req("/settings");
-  let r = await b.req("/settings/admins", { method: "POST", form: { _csrf: b.csrf(), email: "socio@example.com" } });
+  let r = await b.req("/settings/admins", { method: "POST", form: { _csrf: b.csrf(), email: "socio@example.com", role: "admin" } });
   const temp = r.text.match(/data-copy="([\w-]+)"/)[1];
   const s = browser();
   await s.req("/login");
@@ -297,6 +302,138 @@ test("charges: pay key on the account, list, cancel", async () => {
   r = await b.req("/payments?ok=linked");
   assert.match(r.text, /Pagó un cobro/);
   assert.match(r.text, /asociado a mano/);
+});
+
+test("domains: in your Cloudflare or a customer's, one Worker per account, who may use it, default, delete", async () => {
+  const b = await loggedIn();
+  let r = await b.req("/domains", { method: "POST", form: { _csrf: b.csrf(), name: "pagos.cliente.com.co", cf: "new", cfName: "" } });
+  assert.equal(r.status, 400, "another account needs a name");
+  r = await b.req("/domains", { method: "POST", form: { _csrf: b.csrf(), name: "pagos.cliente.com.co", cf: "new", cfName: "Cloudflare de Ana" } });
+  assert.equal(r.location, "/domains/pagos.cliente.com.co?ok=created");
+  const cf = store.cfAccounts.list().find((a) => a.name === "Cloudflare de Ana");
+  assert.equal(store.domains.get("pagos.cliente.com.co").cfAccountId, cf.id);
+  r = await b.req("/domains/pagos.cliente.com.co");
+  assert.match(r.text, /Catch-all/);
+  assert.match(r.text, /Solo la primera vez en Cloudflare de Ana/);
+  assert.match(r.text, new RegExp(store.cfAccounts.secret(cf.id)), "the account's Worker secret, behind 'Mostrar'");
+  const worker = await fetch(`${base}/static/pagoradar-email-worker.js`);
+  assert.equal(worker.status, 200);
+  assert.match(await worker.text(), /X-Pagoradar-Signature/);
+  assert.equal((await b.req("/domains", { method: "POST", form: { _csrf: b.csrf(), name: "pagos.cliente.com.co", cf: "mine" } })).status, 400, "already there");
+
+  // A second domain in the same Cloudflare account: same Worker, nothing new to set up once it works.
+  await b.req("/domains", { method: "POST", form: { _csrf: b.csrf(), name: "cobros.cliente.com.co", cf: cf.id } });
+  store.domains.touch("pagos.cliente.com.co");
+  r = await b.req("/domains/cobros.cliente.com.co");
+  assert.match(r.text, /Ya está/);
+  assert.match(r.text, /ya recibe correos \(de pagos\.cliente\.com\.co\)/);
+
+  // A domain in your own Cloudflare: your Worker, no secret of its own.
+  await b.req("/domains", { method: "POST", form: { _csrf: b.csrf(), name: "pagos2.example.com", cf: "mine" } });
+  r = await b.req("/domains/pagos2.example.com");
+  assert.match(r.text, /que ya tienes en tu cuenta/);
+  assert.doesNotMatch(r.text, /ing_/);
+  assert.equal((await b.req("/domains/pagos2.example.com/rotate", { method: "POST", form: { _csrf: b.csrf() } })).status, 400);
+
+  r = await b.req("/domains/pagos.cliente.com.co", { method: "POST", form: { _csrf: b.csrf(), cf: cf.id, scope: "some" } });
+  assert.equal(r.status, 400, "'only these' needs an app");
+  r = await b.req("/domains/pagos.cliente.com.co", { method: "POST", form: { _csrf: b.csrf(), cf: cf.id, scope: "some", apps: appId } });
+  assert.deepEqual(store.domains.get("pagos.cliente.com.co").appIds, [appId]);
+  assert.equal(store.domains.get("pagos.cliente.com.co").cfAccountId, cf.id, "still in the same account");
+  r = await b.req(`/accounts/new?app=${appId}`);
+  assert.match(r.text, /name="domain"/, "several domains → choose one");
+  r = await b.req("/accounts", { method: "POST", form: { _csrf: b.csrf(), appId, domain: "pagos.cliente.com.co", name: "Caja Cliente", ownerEmails: OWNER, banks: "nequi" } });
+  const acc = store.accounts.get(r.location.match(/\/accounts\/([\w-]+)/)[1]);
+  assert.match(acc.address, /@pagos\.cliente\.com\.co$/);
+
+  const before = store.cfAccounts.secret(cf.id);
+  r = await b.req("/domains/cobros.cliente.com.co/rotate", { method: "POST", form: { _csrf: b.csrf() } });
+  assert.notEqual(store.cfAccounts.secret(cf.id), before, "one secret for the whole account");
+  assert.match(r.text, new RegExp(store.cfAccounts.secret(cf.id)));
+  await b.req("/domains/pagos.cliente.com.co/default", { method: "POST", form: { _csrf: b.csrf() } });
+  assert.equal(store.settings.get("inbound_domain"), "pagos.cliente.com.co");
+  assert.equal((await b.req("/domains/pagos.cliente.com.co/delete", { method: "POST", form: { _csrf: b.csrf() } })).status, 400, "the default can't go");
+  await b.req("/domains/pagos.example.com/default", { method: "POST", form: { _csrf: b.csrf() } });
+  assert.equal((await b.req("/domains/pagos.cliente.com.co/delete", { method: "POST", form: { _csrf: b.csrf() } })).status, 400, "it has an account");
+  store.accounts.remove(acc.id);
+  for (const d of ["pagos.cliente.com.co", "cobros.cliente.com.co", "pagos2.example.com"]) {
+    r = await b.req(`/domains/${d}/delete`, { method: "POST", form: { _csrf: b.csrf() } });
+    assert.equal(r.location, "/settings?ok=deleted");
+  }
+  assert.equal(store.domains.get("pagos.cliente.com.co"), undefined);
+  assert.equal(store.cfAccounts.get(cf.id), undefined, "the Cloudflare account goes with its last domain");
+  assert.match((await b.req("/settings")).text, /pagos\.example\.com/);
+});
+
+test("clients: only their apps, with view or manage access", async () => {
+  const b = await loggedIn();
+  // Another app, with an account and a payment the client must never see.
+  const other = store.apps.create({ name: "App Ajena" });
+  const otherAcc = store.accounts.create({ appId: other.id, name: "Cuenta Ajena", ownerEmails: [OWNER], banks: ["nequi"], domain: "pagos.example.com" });
+  store.payments.add(other.id, otherAcc.id, { bank: "nequi", method: "breb", methodText: null, amountCents: 777_700, currency: "COP", payerName: "Pagador Ajeno", payerNameNormalized: "PAGADOR AJENO", payerBank: null, reference: null, transactionId: null, accountHint: null, paidAt: new Date().toISOString(), dkimDomain: "nequi.com.co", dedupeKey: "ajeno-1" });
+
+  await b.req("/settings");
+  let r = await b.req("/settings/admins", { method: "POST", form: { _csrf: b.csrf(), email: "cliente@example.com", role: "client" } });
+  const temp = r.text.match(/data-copy="([\w-]+)"/)[1];
+  const person = store.admins.byEmail("cliente@example.com");
+  assert.equal(person.role, "client");
+  r = await b.req(`/settings/admins/${person.id}`, { method: "POST", form: { _csrf: b.csrf(), role: "client", [`access_${appId}`]: "manage", [`access_${other.id}`]: "" } });
+  assert.equal(r.location, `/settings/admins/${person.id}?ok=saved`);
+  assert.deepEqual(store.access.forAdmin(person.id), { [appId]: "manage" });
+
+  // The client signs in like anyone: temporary password, 2-step setup, new password.
+  const c = browser();
+  await c.req("/login");
+  await c.req("/login", { method: "POST", form: { _csrf: c.csrf(), email: "cliente@example.com", password: temp } });
+  r = await c.req("/login/2fa/setup");
+  const secret = r.text.match(/data-copy="([A-Z2-7]{32})"/)[1];
+  await c.req("/login/2fa/setup", { method: "POST", form: { _csrf: c.csrf(), code: code(secret) } });
+  await c.req("/me");
+  await c.req("/me/password", { method: "POST", form: { _csrf: c.csrf(), current: temp, password: "clave-del-cliente", password2: "clave-del-cliente" } });
+
+  r = await c.req("/");
+  assert.equal(r.status, 200);
+  assert.doesNotMatch(r.text, /href="\/settings"/, "no Ajustes in the menu");
+  for (const path of ["/settings", "/audit", "/domains", "/domains/pagos.example.com", `/settings/admins/${person.id}`, `/apps/${other.id}`, `/accounts/${otherAcc.id}`]) {
+    assert.equal((await c.req(path)).status, 404, path);
+  }
+  assert.equal((await c.req("/apps", { method: "POST", form: { _csrf: c.csrf(), name: "Mía" } })).status, 404, "only admins create apps");
+  r = await c.req("/apps");
+  assert.match(r.text, /Tienda/);
+  assert.doesNotMatch(r.text, /App Ajena/);
+  for (const path of ["/payments", "/payments.csv", "/charges", "/accounts", "/"]) {
+    assert.doesNotMatch((await c.req(path)).text, /Pagador Ajeno|Cuenta Ajena|App Ajena/, path);
+  }
+
+  // Manage: accounts in its app (not in another one), the webhook, but not switching the app off.
+  r = await c.req("/accounts", { method: "POST", form: { _csrf: c.csrf(), appId: other.id, name: "Intruso", ownerEmails: OWNER, banks: "nequi" } });
+  assert.equal(r.status, 400);
+  r = await c.req("/accounts", { method: "POST", form: { _csrf: c.csrf(), appId, name: "Caja del cliente", ownerEmails: OWNER, banks: "nequi" } });
+  assert.match(r.location, /^\/accounts\/acc_/);
+  r = await c.req(`/apps/${appId}`, { method: "POST", form: { _csrf: c.csrf(), name: "Tienda", webhookUrl: "https://cliente.example.com/hook" } });
+  assert.equal(r.location, `/apps/${appId}?ok=saved`);
+  assert.equal(store.apps.get(appId).webhookUrl, "https://cliente.example.com/hook");
+  assert.equal(store.apps.get(appId).active, true, "a client can't switch its app off (or back on)");
+
+  // View only: pages yes, changes no.
+  await b.req(`/settings/admins/${person.id}`);
+  await b.req(`/settings/admins/${person.id}`, { method: "POST", form: { _csrf: b.csrf(), role: "client", [`access_${appId}`]: "view" } });
+  r = await c.req(`/apps/${appId}`);
+  assert.equal(r.status, 200);
+  assert.match(r.text, /solo lectura/);
+  assert.doesNotMatch(r.text, /whsec_|Crear API key/, "no webhook secret nor keys");
+  assert.equal((await c.req(`/apps/${appId}/rotate`, { method: "POST", form: { _csrf: c.csrf() } })).status, 404);
+  assert.equal((await c.req(`/accounts/${accountId}`, { method: "POST", form: { _csrf: c.csrf(), name: "x", ownerEmails: OWNER, banks: "nequi" } })).status, 404);
+  assert.equal((await c.req(`/accounts/${accountId}`)).status, 200);
+
+  // Made an admin, the grants go; removed, the session ends.
+  await b.req(`/settings/admins/${person.id}`, { method: "POST", form: { _csrf: b.csrf(), role: "admin" } });
+  assert.deepEqual(store.access.forAdmin(person.id), {});
+  assert.equal((await c.req("/settings")).status, 200);
+  await b.req(`/settings/admins/${person.id}/delete`, { method: "POST", form: { _csrf: b.csrf() } });
+  assert.equal((await c.req("/")).location, "/login");
+  r = await b.req("/audit");
+  for (const action of ["Agregó un cliente", "Cambió los permisos", "Quitó un administrador"]) assert.match(r.text, new RegExp(action));
 });
 
 test("login: a locked account only says so to whoever knows the password", async () => {

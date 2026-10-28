@@ -269,6 +269,7 @@ label > .hint { order: 2; font-weight: 400; color: var(--muted); font-size: 12.5
 /* An input with its button attached */
 .input-group { display: flex; gap: 8px; flex-wrap: wrap; }
 .input-group input { flex: 1 1 220px; min-width: 0; }
+.input-group select { flex: 0 1 auto; width: auto; }
 /* A short form on one line (Nueva app) */
 .inline-form { display: grid; gap: 14px; align-items: end; }
 @media (min-width: 900px) { .inline-form { grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr) auto; } .inline-form .hint { display: none; } }

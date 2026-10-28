@@ -41,6 +41,9 @@ export class Pagoradar {
       update: (id, fields) => this.request("PATCH", `/v1/accounts/${seg(id)}`, fields),
       remove: (id) => this.request("DELETE", `/v1/accounts/${seg(id)}`),
     };
+    this.domains = {
+      list: () => this.request("GET", "/v1/domains").then((r) => r.domains),
+    };
     this.charges = {
       create: (fields) => this.request("POST", "/v1/charges", fields),
       list: (filters) => this.request("GET", `/v1/charges${qs(filters)}`),

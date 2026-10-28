@@ -4,7 +4,8 @@ import { analyzeEmail } from "../analyze.js";
 import { BANK_IDS, gmailFilterFor } from "../parsers/index.js";
 import { clientIp, cookie, list, parseCookies, parseForm, rateLimiter, readBody, redirect, sendHtml, sendJson } from "../http.js";
 import { hashPassword, newTotpSecret, randomToken, safeEqual, totpUri, verifyPassword, verifyTotp } from "../security.js";
-import { sendTestEvent } from "../api.js";
+import { chooseDomain, sendTestEvent } from "../api.js";
+import { ACCESS_LEVELS } from "../store.js";
 import { deliverDue } from "../webhooks.js";
 import { expireCharges, payManually } from "../charges.js";
 import {
@@ -36,6 +37,8 @@ const STATIC = {
   "/static/admin.js": { type: "text/javascript; charset=utf-8", file: new URL("../../public/admin.js", import.meta.url) },
   "/manifest.webmanifest": { type: "application/manifest+json; charset=utf-8", file: new URL("../../public/manifest.webmanifest", import.meta.url) },
   "/sw.js": { type: "text/javascript; charset=utf-8", file: new URL("../../public/sw.js", import.meta.url), cache: "no-cache" },
+  // The Cloudflare Email Worker, for whoever sets up a domain in their own Cloudflare account (it holds no secrets).
+  "/static/pagoradar-email-worker.js": { type: "text/javascript; charset=utf-8", file: new URL("../../worker/src/index.js", import.meta.url) },
   "/favicon.svg": { type: "image/svg+xml", file: new URL("../../public/favicon.svg", import.meta.url) },
   "/favicon.ico": { type: "image/png", file: new URL("../../public/icons/favicon-48.png", import.meta.url) },
   ...Object.fromEntries(
@@ -65,6 +68,7 @@ const MESSAGES = {
   "totp-reset": "Configura de nuevo tu app autenticadora.",
   canceled: "Cobro cancelado.",
   linked: "Pago asociado al cobro: se avisó a la app.",
+  default: "Ahora es el dominio predeterminado.",
 };
 
 // ---------- helpers
@@ -85,9 +89,27 @@ function sameOrigin(req, config) {
   }
 }
 
-function inboundDomain(ctx) {
-  return ctx.store.settings.get("inbound_domain") ?? ctx.config.inboundDomain ?? null;
+const DOMAIN_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,}$/;
+
+/**
+ * What the signed-in person may see and do. An admin: everything. A client: only the apps they were given,
+ * each with "view" (pages, payments, charges, CSV) or "manage" (also accounts, webhook, API keys, charges).
+ */
+function scopeFor(store, admin) {
+  if (admin.role !== "client") return { all: true, appIds: undefined, can: () => true };
+  const grants = store.access.forAdmin(admin.id);
+  return {
+    all: false,
+    appIds: Object.keys(grants),
+    can: (appId, level = "view") => (level === "manage" ? grants[appId] === "manage" : Boolean(grants[appId])),
+  };
 }
+
+const visibleApps = (s) => s.ctx.store.apps.list().filter((a) => s.scope.can(a.id));
+const manageableApps = (s) => s.ctx.store.apps.list().filter((a) => s.scope.can(a.id, "manage"));
+const visibleAccounts = (s) => s.ctx.store.accounts.list().filter((a) => s.scope.can(a.appId));
+/** Someone else's app (or account, payment…) is answered exactly like a missing one. */
+const notFound = (s, what = "Página no encontrada.") => page(s, { title: "No encontrado", body: html`<div class="card"><h1>No encontrado</h1><p>${what}</p><p><a href="/">Volver al inicio</a></p></div>`, status: 404 });
 
 const BOGOTA_OFFSET_MS = 5 * 3600_000;
 /** Midnight in Bogotá of the given YYYY-MM-DD (or of today), as an ISO instant. */
@@ -164,9 +186,14 @@ export async function handleAdmin(req, res, url, ctx) {
     }
   }
   s.form = form;
+  s.scope = scopeFor(store, admin);
   s.audit = (action, target, detail) => store.audit.add(admin.email, action, target ?? null, detail ?? null);
 
   if (admin.mustChangePassword && path !== "/me" && path !== "/me/password" && path !== "/logout") return redirect(res, "/me?first=1");
+
+  // Pagoradar-wide settings, people, domains and the audit log are for admins only.
+  const adminOnly = /^\/(settings|domains|audit)(\/|$)/.test(path) || (path === "/apps" && method === "POST");
+  if (adminOnly && !s.scope.all) return notFound(s);
 
   if (path === "/logout" && method === "POST") {
     store.sessions.destroy(token);
@@ -192,12 +219,16 @@ export async function handleAdmin(req, res, url, ctx) {
   if (path === "/inbox" && method === "GET") return inboxPage(s);
   if (path === "/settings") return method === "POST" ? saveSettings(s) : settingsPage(s);
   if (path === "/settings/admins" && method === "POST") return createAdmin(s);
+  if ((m = path.match(/^\/settings\/admins\/([\w-]+)$/))) return method === "POST" ? savePerson(s, m[1]) : personPage(s, m[1]);
+  if (path === "/domains") return method === "POST" ? createDomain(s) : domainsPage(s);
+  if ((m = path.match(/^\/domains\/([a-z0-9.-]+)$/))) return method === "POST" ? updateDomain(s, m[1]) : domainPage(s, m[1]);
+  if ((m = path.match(/^\/domains\/([a-z0-9.-]+)\/(rotate|default|delete)$/)) && method === "POST") return domainAction(s, m[1], m[2]);
   if ((m = path.match(/^\/settings\/admins\/([\w-]+)\/delete$/)) && method === "POST") return deleteAdmin(s, m[1]);
   if (path === "/me" && method === "GET") return mePage(s);
   if (path === "/me/password" && method === "POST") return changePassword(s);
   if (path === "/me/totp-reset" && method === "POST") return resetTotp(s);
   if (path === "/audit" && method === "GET") return auditPage(s);
-  return page(s, { title: "No encontrado", body: html`<div class="card"><h1>No encontrado</h1><p><a href="/">Volver al inicio</a></p></div>`, status: 404 });
+  return notFound(s);
 }
 
 function page(s, { title, active = null, body, status = 200 }) {
@@ -405,21 +436,23 @@ async function setupTotp(s, method) {
 
 function dashboard(s) {
   const { store } = s.ctx;
-  const today = store.payments.stats(bogotaDayStart());
-  const week = store.payments.stats(new Date(Date.now() - 7 * 86400_000).toISOString());
-  const failed = store.deliveries.countFailed();
-  const rejected = store.inbox.countSince(new Date(Date.now() - 7 * 86400_000).toISOString());
-  const accounts = store.accounts.list();
+  const { appIds } = s.scope;
+  const today = store.payments.stats(bogotaDayStart(), appIds);
+  const week = store.payments.stats(new Date(Date.now() - 7 * 86400_000).toISOString(), appIds);
+  const failed = store.deliveries.countFailed(appIds);
+  const rejected = store.inbox.countSince(new Date(Date.now() - 7 * 86400_000).toISOString(), appIds);
+  const accounts = visibleAccounts(s);
   const pending = accounts.filter((a) => a.status === "pending");
-  const recent = store.payments.search({ limit: 10 }).rows;
-  const appName = Object.fromEntries(store.apps.list().map((a) => [a.id, a.name]));
-  const domain = inboundDomain(s.ctx);
+  const recent = store.payments.search({ appIds, limit: 10 }).rows;
+  const appName = Object.fromEntries(visibleApps(s).map((a) => [a.id, a.name]));
+  const noDomain = s.scope.all && store.domains.list().length === 0;
   return page(s, {
     title: "Inicio",
     active: "/",
     body: html`
       <div class="head"><div><h1>Inicio</h1><p class="muted">Pagos que avisaron los bancos y el estado de tus integraciones.</p></div></div>
-      ${!domain ? flash("Falta el dominio de recepción: configúralo en Ajustes antes de crear cuentas.", "warn") : ""}
+      ${noDomain ? flash(html`Falta el dominio de recepción: agrégalo en <a href="/domains">Dominios</a> antes de crear cuentas.`, "warn") : ""}
+      ${!s.scope.all && s.scope.appIds.length === 0 ? flash("Todavía no tienes apps asignadas. Pídele acceso al administrador de pagoradar.", "warn") : ""}
       ${failed ? flash(html`Hay ${failed} entregas de webhook fallidas. <a href="/apps">Revisa tus apps</a>.`, "bad") : ""}
       <div class="grid">
         <div class="stat stat-hero"><span class="stat-ico">${icon("today")}</span><span class="stat-label">Hoy</span><b>${fmtMoney(today.cents / 100)}</b><span class="stat-sub">${today.n} ${today.n === 1 ? "pago" : "pagos"}</span></div>
@@ -429,14 +462,14 @@ function dashboard(s) {
       </div>
       <div class="card">
         <div class="head"><h2>Últimos pagos</h2><a href="/payments">Ver todos</a></div>
-        ${paymentsTable(recent, appName, store)}
+        ${paymentsTable(s, recent, appName)}
       </div>`,
   });
 }
 
-function paymentsTable(rows, appName, store) {
+function paymentsTable(s, rows, appName) {
   if (rows.length === 0) return html`<p class="empty">Todavía no hay pagos.</p>`;
-  const accountName = Object.fromEntries(store.accounts.list().map((a) => [a.id, a.name]));
+  const accountName = Object.fromEntries(visibleAccounts(s).map((a) => [a.id, a.name]));
   return html`<div class="table-wrap"><table>
     <thead><tr><th>Fecha</th><th>Pagador</th><th>Banco</th><th>Cuenta</th><th>App</th><th>Cobro</th><th class="num">Valor</th></tr></thead>
     <tbody>${rows.map(
@@ -446,7 +479,7 @@ function paymentsTable(rows, appName, store) {
         <td>${BANK_LABEL[p.bank] ?? p.bank}${p.reference ? html`<div class="muted small">Ref. ${p.reference}</div>` : ""}</td>
         <td>${p.accountId ? html`<a class="quiet" href="/accounts/${p.accountId}">${accountName[p.accountId] ?? p.accountId}</a>` : "—"}</td>
         <td>${appName[p.appId] ?? p.appId}</td>
-        <td class="t-wide">${chargeCell(p, store)}</td>
+        <td class="t-wide">${chargeCell(s, p)}</td>
         <td class="num"><b>${fmtMoney(p.amount)}</b></td>
       </tr>`,
     )}</tbody></table></div>`;
@@ -454,12 +487,14 @@ function paymentsTable(rows, appName, store) {
 
 const MATCH_LABEL = { exact: "valor exacto", approximate: "pagó el valor redondo", manual: "asociado a mano" };
 
-function chargeCell(p, store) {
+function chargeCell(s, p) {
+  const { store } = s.ctx;
   const c = store.charges.byPayment(p.id);
   if (c) {
     return html`${badge("Pagó un cobro", "ok")}<div class="muted small">${c.description ?? c.reference ?? c.id}${c.match ? ` · ${MATCH_LABEL[c.match] ?? c.match}` : ""}</div>`;
   }
   // Only offer it when an open or recent charge of that account asked for about that much (±10%, at least $2.000).
+  if (!s.scope.can(p.appId, "manage")) return "";
   const closest = p.accountId ? store.charges.linkable(p.accountId, p.amountCents, 7, 1)[0] : null;
   if (closest && Math.abs(closest.amountCents - p.amountCents) <= Math.max(p.amountCents * 0.1, 200_000)) {
     return html`<a class="chip" href="/payments/${p.id}/link">Asociar a un cobro</a>`;
@@ -470,7 +505,7 @@ function chargeCell(p, store) {
 function linkPaymentPage(s, id, { error = null } = {}) {
   const { store } = s.ctx;
   const p = store.payments.get(id);
-  if (!p) return page(s, { title: "No encontrado", body: html`<div class="card">Pago no encontrado.</div>`, status: 404 });
+  if (!p || !s.scope.can(p.appId, "manage")) return notFound(s, "Pago no encontrado.");
   const linked = store.charges.byPayment(p.id);
   const options = p.accountId && !linked ? store.charges.linkable(p.accountId, p.amountCents) : [];
   const csrf = s.session.csrf;
@@ -513,7 +548,8 @@ function linkPayment(s, id) {
   const { store, config } = s.ctx;
   const p = store.payments.get(id);
   const charge = store.charges.get(String(s.form.chargeId ?? ""));
-  if (!p || !charge) return redirect(s.res, "/payments");
+  if (!p || !s.scope.can(p.appId, "manage")) return notFound(s, "Pago no encontrado.");
+  if (!charge) return redirect(s.res, "/payments");
   if (charge.accountId !== p.accountId) return linkPaymentPage(s, id, { error: "Ese cobro es de otra cuenta receptora." });
   if (store.charges.byPayment(p.id)) return linkPaymentPage(s, id, { error: "Este pago ya está asociado a otro cobro." });
   const app = store.apps.get(charge.appId);
@@ -527,7 +563,7 @@ function linkPayment(s, id) {
 
 function appsPage(s, error = null) {
   const { store } = s.ctx;
-  const apps = store.apps.list();
+  const apps = visibleApps(s);
   const csrf = s.session.csrf;
   const host = (u) => {
     try {
@@ -544,7 +580,7 @@ function appsPage(s, error = null) {
       <div class="head"><div><h1>Apps</h1><p class="muted">Cada proyecto que recibe pagos (Ibirifas, otro SaaS…): su webhook y sus API keys.</p></div><a class="btn btn-small" href="/docs" target="_blank" rel="noopener">${icon("book")}<span>Documentación para desarrolladores</span></a></div>
       ${flash(error, "bad")}
       ${apps.length === 0
-        ? html`<div class="card"><p class="empty">Aún no hay apps. Crea la primera abajo.</p></div>`
+        ? html`<div class="card"><p class="empty">${s.scope.all ? "Aún no hay apps. Crea la primera abajo." : "No tienes apps asignadas."}</p></div>`
         : html`<div class="tiles">${apps.map((a) => {
             const accounts = store.accounts.list(a.id);
             const keys = store.keys.listForApp(a.id).filter((k) => !k.revokedAt).length;
@@ -555,7 +591,7 @@ function appsPage(s, error = null) {
               <div class="tile-foot"><span>${accounts.length} ${accounts.length === 1 ? "cuenta" : "cuentas"}</span><span>${keys} API ${keys === 1 ? "key" : "keys"}</span>${failed ? badge(`${failed} entregas fallidas`, "bad") : ""}</div>
             </a>`;
           })}</div>`}
-      <div class="card">
+      ${s.scope.all ? html`<div class="card">
         <h2>Nueva app</h2>
         <form method="post" action="/apps" class="inline-form">
           ${csrfField(csrf)}
@@ -563,7 +599,7 @@ function appsPage(s, error = null) {
           <label class="wide">URL del webhook <span class="hint">Opcional; se puede poner después.</span><input type="url" name="webhookUrl" maxlength="500" placeholder="https://tu-app.com/api/pagoradar/webhook"></label>
           <button class="btn btn-primary" type="submit">${icon("plus")}<span>Crear app</span></button>
         </form>
-      </div>`,
+      </div>` : ""}`,
   });
 }
 
@@ -580,7 +616,8 @@ function createApp(s) {
 function appPage(s, id, { error = null, newKey = null, secretShown = null } = {}) {
   const { store } = s.ctx;
   const app = store.apps.get(id);
-  if (!app) return page(s, { title: "No encontrada", body: html`<div class="card">App no encontrada.</div>`, status: 404 });
+  if (!app || !s.scope.can(id)) return notFound(s, "App no encontrada.");
+  const manage = s.scope.can(id, "manage");
   const keys = store.keys.listForApp(id);
   const accounts = store.accounts.list(id);
   const deliveries = store.deliveries.list({ appId: id, limit: 30 });
@@ -592,8 +629,8 @@ function appPage(s, id, { error = null, newKey = null, secretShown = null } = {}
     active: "/apps",
     status: error ? 400 : 200,
     body: html`
-      <div class="head"><a class="back" href="/apps">← Apps</a><div><h1>${app.name} ${app.active ? badge("Activa", "ok") : badge("Inactiva", "muted")}</h1><p class="muted"><code>${app.id}</code></p></div>
-        ${postButton(`/apps/${id}/test`, html`${icon("send")}<span>Enviar evento de prueba</span>`, csrf)}</div>
+      <div class="head"><a class="back" href="/apps">← Apps</a><div><h1>${app.name} ${app.active ? badge("Activa", "ok") : badge("Inactiva", "muted")}</h1><p class="muted"><code>${app.id}</code>${manage ? "" : " · solo lectura"}</p></div>
+        ${manage ? postButton(`/apps/${id}/test`, html`${icon("send")}<span>Enviar evento de prueba</span>`, csrf) : ""}</div>
       ${msg(s)}${flash(error, "bad")}
       ${newKey ? html`<div class="secret card"><h2>Tu nueva API key</h2><p>Cópiala ahora: <b>no se volverá a mostrar</b>.</p><p>${copyable(newKey)}</p></div>` : ""}
       <div class="grid grid-3">
@@ -601,13 +638,13 @@ function appPage(s, id, { error = null, newKey = null, secretShown = null } = {}
         <div class="stat"><span class="stat-ico">${icon("send")}</span><span class="stat-label">Entregas recientes</span><b>${delivered}</b><span class="stat-sub">${deliveries.length ? `de las últimas ${deliveries.length} llegaron` : "aún no hay entregas"}</span></div>
         <div class="stat${failed ? " stat-warn" : ""}"><span class="stat-ico">${icon("alert")}</span><span class="stat-label">Fallidas</span><b>${failed}</b><span class="stat-sub">${failed ? "revisa la URL y reintenta" : "todo bien"}</span></div>
       </div>
-      <div class="card">
+      ${manage ? html`<div class="card">
         <form method="post" action="/apps/${id}">
           ${csrfField(csrf)}
           ${section("Webhook", "A dónde enviamos cada pago y cada cobro, firmado con el secreto de abajo.", html`
             <label>Nombre <input type="text" name="name" value="${app.name}" required maxlength="60"></label>
             <label>URL del webhook <input type="url" name="webhookUrl" value="${app.webhookUrl ?? ""}" maxlength="500" placeholder="https://tu-app.com/api/pagoradar/webhook"></label>
-            ${toggle("active", app.active, "App activa", "Si la apagas, sus API keys dejan de funcionar y no recibe avisos.")}`)}
+            ${s.scope.all ? toggle("active", app.active, "App activa", "Si la apagas, sus API keys dejan de funcionar y no recibe avisos.") : ""}`)}
           <div class="form-actions"><button class="btn btn-primary" type="submit">Guardar cambios</button></div>
         </form>
         ${section("Secreto de la firma", html`Tu app lo usa para verificar la cabecera <code>Pagoradar-Signature</code>.`, html`
@@ -628,8 +665,8 @@ function appPage(s, id, { error = null, newKey = null, secretShown = null } = {}
             <input type="text" name="name" placeholder="Nombre de la nueva key (ej. producción)" maxlength="60" required aria-label="Nombre de la nueva API key">
             <button class="btn" type="submit">${icon("plus")}<span>Crear API key</span></button>
           </form>`)}
-      </div>
-      <div class="section-head" id="cuentas"><h2>Cuentas receptoras</h2><a class="btn btn-small" href="/accounts/new?app=${id}">${icon("plus")}<span>Nueva cuenta</span></a></div>
+      </div>` : html`<div class="card">${section("Webhook", "A dónde enviamos cada pago y cada cobro.", html`<p>${app.webhookUrl ? html`<code>${app.webhookUrl}</code>` : html`<span class="muted">Sin webhook</span>`}</p>`)}</div>`}
+      <div class="section-head" id="cuentas"><h2>Cuentas receptoras</h2>${manage ? html`<a class="btn btn-small" href="/accounts/new?app=${id}">${icon("plus")}<span>Nueva cuenta</span></a>` : ""}</div>
       ${accountCards(accounts, { [id]: app.name })}
       <div class="card mt">
         <h2>Entregas del webhook</h2>
@@ -642,7 +679,7 @@ function appPage(s, id, { error = null, newKey = null, secretShown = null } = {}
               <td>${d.status === "delivered" ? badge("Entregado", "ok") : d.status === "failed" ? badge("Fallido", "bad") : badge("Pendiente", "warn")}</td>
               <td>${d.attempts} ${d.attempts === 1 ? "intento" : "intentos"}</td>
               <td class="t-wide">${d.last_status ? `HTTP ${d.last_status}` : ""}${d.last_error ? html`<div class="muted small">${d.last_error}</div>` : ""}${d.status === "pending" && d.attempts ? html`<div class="muted small">Próximo: ${fmtDate(d.next_attempt_at)}</div>` : ""}</td>
-              <td class="t-act">${d.status !== "delivered" ? postButton(`/deliveries/${d.id}/retry`, "Reintentar", csrf, { small: true, fields: { back: `/apps/${id}` } }) : ""}</td>
+              <td class="t-act">${manage && d.status !== "delivered" ? postButton(`/deliveries/${d.id}/retry`, "Reintentar", csrf, { small: true, fields: { back: `/apps/${id}` } }) : ""}</td>
             </tr>`)}</tbody></table></div>`}
       </div>`,
   });
@@ -650,20 +687,23 @@ function appPage(s, id, { error = null, newKey = null, secretShown = null } = {}
 
 function updateApp(s, id) {
   const { store } = s.ctx;
-  if (!store.apps.get(id)) return redirect(s.res, "/apps");
+  const app = store.apps.get(id);
+  if (!app || !s.scope.can(id, "manage")) return notFound(s, "App no encontrada.");
+  // Only an admin turns an app on or off (it's how a client's access to the API is suspended).
+  const active = s.scope.all ? s.form.active === "1" : app.active;
   const name = String(s.form.name ?? "").trim();
   const webhookUrl = String(s.form.webhookUrl ?? "").trim() || null;
   if (!name || name.length > 60) return appPage(s, id, { error: "Escribe un nombre (máximo 60 caracteres)." });
   if (webhookUrl && !validUrl(webhookUrl)) return appPage(s, id, { error: "La URL del webhook no es válida." });
-  store.apps.update(id, { name, webhookUrl, active: s.form.active === "1" });
-  s.audit("Editó la app", id, `${name} · webhook ${webhookUrl ?? "(ninguno)"} · ${s.form.active === "1" ? "activa" : "inactiva"}`);
+  store.apps.update(id, { name, webhookUrl, active });
+  s.audit("Editó la app", id, `${name} · webhook ${webhookUrl ?? "(ninguno)"} · ${active ? "activa" : "inactiva"}`);
   return redirect(s.res, `/apps/${id}?ok=saved`);
 }
 
 async function appAction(s, id, action) {
   const { store, log } = s.ctx;
   const app = store.apps.get(id);
-  if (!app) return redirect(s.res, "/apps");
+  if (!app || !s.scope.can(id, "manage")) return notFound(s, "App no encontrada.");
   if (action === "rotate") {
     const secret = store.apps.rotateSecret(id);
     s.audit("Cambió el secreto del webhook", id);
@@ -681,11 +721,14 @@ async function appAction(s, id, action) {
 }
 
 function revokeKey(s, appId, keyId) {
+  if (!s.ctx.store.apps.get(appId) || !s.scope.can(appId, "manage")) return notFound(s, "App no encontrada.");
   if (s.ctx.store.keys.revoke(keyId, appId)) s.audit("Revocó una API key", appId, keyId);
   return redirect(s.res, `/apps/${appId}?ok=revoked`);
 }
 
 async function retryDelivery(s, id) {
+  const d = s.ctx.store.deliveries.get(id);
+  if (!d || !s.scope.can(d.source, "manage")) return notFound(s);
   if (s.ctx.store.deliveries.retry(id)) {
     s.audit("Reintentó una entrega", String(id));
     await deliverDue(s.ctx.store, { log: s.ctx.log });
@@ -707,13 +750,12 @@ function accountCards(accounts, appName) {
 }
 
 function accountsPage(s) {
-  const { store } = s.ctx;
   const q = s.url.searchParams;
-  const apps = store.apps.list();
+  const apps = visibleApps(s);
   const appName = Object.fromEntries(apps.map((a) => [a.id, a.name]));
   const status = ["active", "pending", "disabled"].includes(q.get("status")) ? q.get("status") : null;
   const text = q.get("q")?.trim().toLowerCase() ?? "";
-  const base = store.accounts.list().filter(
+  const base = visibleAccounts(s).filter(
     (a) => (!q.get("app") || a.appId === q.get("app")) && (!text || [a.name, a.address, a.tenantRef ?? "", ...a.ownerEmails].some((v) => v.toLowerCase().includes(text))),
   );
   const count = (st) => base.filter((a) => a.status === st).length;
@@ -722,7 +764,7 @@ function accountsPage(s) {
     title: "Cuentas receptoras",
     active: "/accounts",
     body: html`
-      <div class="head"><div><h1>Cuentas receptoras</h1><p class="muted">Cada cuenta bancaria que reenvía sus avisos a una dirección de pagoradar.</p></div><a class="btn btn-primary" href="/accounts/new">${icon("plus")}<span>Nueva cuenta</span></a></div>
+      <div class="head"><div><h1>Cuentas receptoras</h1><p class="muted">Cada cuenta bancaria que reenvía sus avisos a una dirección de pagoradar.</p></div>${manageableApps(s).length ? html`<a class="btn btn-primary" href="/accounts/new">${icon("plus")}<span>Nueva cuenta</span></a>` : ""}</div>
       ${msg(s)}
       ${filterBar(s, {
         rows: [
@@ -745,10 +787,18 @@ function bankChecks(selected) {
   return html`<div class="checks">${BANK_IDS.map((b) => html`<label><input type="checkbox" name="banks" value="${b}"${selected.includes(b) ? raw(" checked") : ""}> ${BANK_LABEL[b] ?? b}</label>`)}</div>`;
 }
 
+/** The domains any of `apps` may use, each labeled with the apps it is limited to (if it is). */
+function domainOptions(s, apps) {
+  const appName = Object.fromEntries(apps.map((a) => [a.id, a.name]));
+  return s.ctx.store.domains
+    .list()
+    .filter((d) => !d.appIds || d.appIds.some((id) => appName[id]))
+    .map((d) => [d.name, d.appIds ? `${d.name} (solo ${d.appIds.filter((id) => appName[id]).map((id) => appName[id]).join(", ")})` : d.name]);
+}
+
 function newAccountPage(s, { error = null, values = {} } = {}) {
-  const { store } = s.ctx;
-  const apps = store.apps.list();
-  const domain = inboundDomain(s.ctx);
+  const apps = manageableApps(s);
+  const domains = domainOptions(s, apps);
   const selectedApp = values.appId ?? s.url.searchParams.get("app") ?? apps[0]?.id;
   return page(s, {
     title: "Nueva cuenta",
@@ -757,18 +807,21 @@ function newAccountPage(s, { error = null, values = {} } = {}) {
     body: html`
       <div class="head"><a class="back" href="/accounts">← Cuentas</a><div><h1>Nueva cuenta receptora</h1><p class="muted">pagoradar le dará una dirección; el Gmail del dueño reenviará ahí los avisos del banco.</p></div></div>
       ${flash(error, "bad")}
-      ${!domain ? flash(html`Primero configura el dominio de recepción en <a href="/settings">Ajustes</a>.`, "warn") : ""}
-      ${apps.length === 0 ? flash(html`Primero crea una <a href="/apps">app</a>.`, "warn") : ""}
+      ${domains.length === 0 ? flash(s.scope.all ? html`Primero agrega un dominio de recepción en <a href="/domains">Dominios</a>.` : "No hay un dominio de recepción para tus apps: pídeselo al administrador.", "warn") : ""}
+      ${apps.length === 0 ? flash(s.scope.all ? html`Primero crea una <a href="/apps">app</a>.` : "No puedes crear cuentas en ninguna app.", "warn") : ""}
       <form method="post" action="/accounts" class="card">
         ${csrfField(s.session.csrf)}
         ${section("La cuenta", "A qué app pertenece y cómo la vas a reconocer.", html`
           <label>App <select name="appId" required>${apps.map((a) => html`<option value="${a.id}"${a.id === selectedApp ? raw(" selected") : ""}>${a.name}</option>`)}</select></label>
           <label>Nombre <span class="hint">Ej. "Nequi Negocios de Ana".</span><input type="text" name="name" required maxlength="60" value="${values.name ?? ""}" placeholder="Nequi Negocios de Ana"></label>
+          ${domains.length > 1
+            ? html`<label>Dominio de la dirección <span class="hint">Dónde recibe esta cuenta: <code>algo@dominio</code>.</span><select name="domain">${domains.map(([v, l]) => html`<option value="${v}"${v === values.domain ? raw(" selected") : ""}>${l}</option>`)}</select></label>`
+            : ""}
           <label>Id del cliente en tu app <span class="hint">Opcional: a quién pertenece en tu app (ej. el id de la organización). Llega en cada aviso.</span><input type="text" name="tenantRef" maxlength="120" value="${values.tenantRef ?? ""}" placeholder="org_42"></label>`)}
         ${section("Avisos del banco", "Solo se aceptan avisos dirigidos a estos correos y firmados por estos bancos.", html`
           <label>Correos donde el banco avisa <span class="hint">El Gmail del dueño de la cuenta, uno por línea.</span><textarea name="ownerEmails" required rows="2" placeholder="dueno@gmail.com">${values.ownerEmails ?? ""}</textarea></label>
           <div class="field"><span class="field-label">Bancos</span>${bankChecks(values.banks ?? BANK_IDS)}</div>`)}
-        <div class="form-actions"><a class="btn btn-ghost" href="/accounts">Cancelar</a><button class="btn btn-primary" type="submit"${!domain || apps.length === 0 ? raw(" disabled") : ""}>Crear cuenta</button></div>
+        <div class="form-actions"><a class="btn btn-ghost" href="/accounts">Cancelar</a><button class="btn btn-primary" type="submit"${domains.length === 0 || apps.length === 0 ? raw(" disabled") : ""}>Crear cuenta</button></div>
       </form>`,
   });
 }
@@ -776,6 +829,7 @@ function newAccountPage(s, { error = null, values = {} } = {}) {
 function readAccountForm(s) {
   const values = {
     appId: String(s.form.appId ?? ""),
+    domain: String(s.form.domain ?? "").trim().toLowerCase(),
     name: String(s.form.name ?? "").trim(),
     ownerEmails: String(s.form.ownerEmails ?? ""),
     banks: list(s.form.banks).filter((b) => BANK_IDS.includes(b)),
@@ -793,11 +847,11 @@ function readAccountForm(s) {
 
 function createAccount(s) {
   const { store } = s.ctx;
-  const domain = inboundDomain(s.ctx);
   const { values, emails, error } = readAccountForm(s);
-  if (!store.apps.get(values.appId)) return newAccountPage(s, { error: "Elige una app.", values });
-  if (!domain) return newAccountPage(s, { error: "Falta el dominio de recepción (Ajustes).", values });
+  if (!store.apps.get(values.appId) || !s.scope.can(values.appId, "manage")) return newAccountPage(s, { error: "Elige una app.", values });
   if (error) return newAccountPage(s, { error, values });
+  const { domain, error: domainError } = chooseDomain(store, values.appId, values.domain || undefined);
+  if (domainError) return newAccountPage(s, { error: values.domain ? "Esa app no puede usar ese dominio." : "No hay dominio de recepción para esa app.", values });
   const account = store.accounts.create({ appId: values.appId, name: values.name, ownerEmails: emails, banks: values.banks, tenantRef: values.tenantRef || null, domain });
   s.audit("Creó la cuenta receptora", account.id, `${account.name} · ${account.address}`);
   return redirect(s.res, `/accounts/${account.id}?ok=created`);
@@ -806,7 +860,8 @@ function createAccount(s) {
 function accountPage(s, id, { error = null } = {}) {
   const { store } = s.ctx;
   const a = store.accounts.get(id);
-  if (!a) return page(s, { title: "No encontrada", body: html`<div class="card">Cuenta no encontrada.</div>`, status: 404 });
+  if (!a || !s.scope.can(a.appId)) return notFound(s, "Cuenta no encontrada.");
+  const manage = s.scope.can(a.appId, "manage");
   const app = store.apps.get(a.appId);
   const csrf = s.session.csrf;
   const senders = gmailFilterFor(a.banks);
@@ -857,7 +912,7 @@ function accountPage(s, id, { error = null } = {}) {
             : html`Haz un pago pequeño de prueba: cuando llegue el primer aviso válido, la cuenta pasa a <b>Activa</b>.`}</li>
         </ol>`}
       </div>
-      <form method="post" action="/accounts/${id}" class="card">
+      ${manage ? html`<form method="post" action="/accounts/${id}" class="card">
         ${csrfField(csrf)}
         ${section("La cuenta", "Cómo la reconoces y a qué cliente de tu app pertenece.", html`
           <label>Nombre <input type="text" name="name" value="${a.name}" required maxlength="60"></label>
@@ -889,15 +944,16 @@ function accountPage(s, id, { error = null } = {}) {
             ${recent.length === 0 ? postButton(`/accounts/${id}/delete`, "Eliminar", csrf, { tone: "danger", confirm: "¿Eliminar esta cuenta receptora?" }) : ""}
           </div>
         </div>
-      </div>
-      <div class="card"><h2>Últimos pagos</h2>${paymentsTable(recent, app ? { [app.id]: app.name } : {}, store)}</div>
+      </div>` : ""}
+      <div class="card"><h2>Últimos pagos</h2>${paymentsTable(s, recent, app ? { [app.id]: app.name } : {})}</div>
       <div class="card"><h2>Correos rechazados</h2>${inboxTable(rejected)}</div>`,
   });
 }
 
 function updateAccount(s, id) {
   const { store } = s.ctx;
-  if (!store.accounts.get(id)) return redirect(s.res, "/accounts");
+  const a = store.accounts.get(id);
+  if (!a || !s.scope.can(a.appId, "manage")) return notFound(s, "Cuenta no encontrada.");
   const { values, emails, error } = readAccountForm(s);
   if (error) return accountPage(s, id, { error });
   store.accounts.update(id, { name: values.name, ownerEmails: emails, banks: values.banks, tenantRef: values.tenantRef || null, payKey: values.payKey || null, payHolder: values.payHolder || null });
@@ -908,7 +964,7 @@ function updateAccount(s, id) {
 function accountAction(s, id, action) {
   const { store } = s.ctx;
   const a = store.accounts.get(id);
-  if (!a) return redirect(s.res, "/accounts");
+  if (!a || !s.scope.can(a.appId, "manage")) return notFound(s, "Cuenta no encontrada.");
   if (action === "toggle") {
     const disable = a.status !== "disabled";
     store.accounts.setDisabled(id, disable);
@@ -924,7 +980,7 @@ function accountAction(s, id, action) {
 async function checkEmail(s, id) {
   const { store, resolver } = s.ctx;
   const a = store.accounts.get(id);
-  if (!a) return sendJson(s.res, 404, { error: "Cuenta no encontrada" });
+  if (!a || !s.scope.can(a.appId, "manage")) return sendJson(s.res, 404, { error: "Cuenta no encontrada" });
   const raw = await readBody(s.req, 5 * 1024 * 1024);
   if (!raw?.length) return sendJson(s.res, 400, { error: "Archivo vacío o demasiado grande" });
   const r = await analyzeEmail(raw, { ownerEmails: a.ownerEmails, banks: a.banks, resolver });
@@ -1021,9 +1077,9 @@ function paymentsPage(s) {
   const q = s.url.searchParams;
   const pageNo = Math.max(1, Number(q.get("page") ?? 1) || 1);
   const filters = paymentFilters(s);
-  const { total, cents, rows } = store.payments.search({ ...filters, limit: 50, offset: (pageNo - 1) * 50 });
-  const apps = store.apps.list();
-  const accounts = store.accounts.list();
+  const { total, cents, rows } = store.payments.search({ ...filters, appIds: s.scope.appIds, limit: 50, offset: (pageNo - 1) * 50 });
+  const apps = visibleApps(s);
+  const accounts = visibleAccounts(s);
   const appName = Object.fromEntries(apps.map((a) => [a.id, a.name]));
   const pageLink = (n) => withParams(s, { page: n });
   const filtered = Object.values(filters).some(Boolean);
@@ -1045,7 +1101,7 @@ function paymentsPage(s) {
           dateFilter(s),
         ],
       })}
-      <div class="card">${rows.length === 0 && filtered ? html`<p class="empty">Ningún pago con estos filtros. <a href="/payments">Ver todos</a></p>` : paymentsTable(rows, appName, store)}</div>
+      <div class="card">${rows.length === 0 && filtered ? html`<p class="empty">Ningún pago con estos filtros. <a href="/payments">Ver todos</a></p>` : paymentsTable(s, rows, appName)}</div>
       <div class="row">
         ${pageNo > 1 ? html`<a class="btn" href="${pageLink(pageNo - 1)}">← Anteriores</a>` : ""}
         ${pageNo * 50 < total ? html`<a class="btn" href="${pageLink(pageNo + 1)}">Siguientes →</a>` : ""}
@@ -1055,7 +1111,7 @@ function paymentsPage(s) {
 
 function paymentsCsv(s) {
   const { store } = s.ctx;
-  const { rows } = store.payments.search({ ...paymentFilters(s), limit: 10_000 });
+  const { rows } = store.payments.search({ ...paymentFilters(s), appIds: s.scope.appIds, limit: 10_000 });
   const cell = (v) => {
     const t = String(v ?? "");
     const safe = /^[=+\-@\t\r]/.test(t) ? `'${t}` : t; // never a formula in a spreadsheet
@@ -1077,11 +1133,11 @@ function chargesPage(s) {
   const pageNo = Math.max(1, Number(q.get("page") ?? 1) || 1);
   const status = ["pending", "paid", "expired", "canceled"].includes(q.get("status")) ? q.get("status") : undefined;
   const filters = { appId: q.get("app") || undefined, accountId: q.get("account") || undefined, q: q.get("q")?.trim() || undefined };
-  const { total, rows } = store.charges.search({ ...filters, status, limit: 50, offset: (pageNo - 1) * 50 });
-  const counts = store.charges.countByStatus(filters);
+  const { total, rows } = store.charges.search({ ...filters, appIds: s.scope.appIds, status, limit: 50, offset: (pageNo - 1) * 50 });
+  const counts = store.charges.countByStatus({ ...filters, appIds: s.scope.appIds });
   const all = counts.pending + counts.paid + counts.expired + counts.canceled;
-  const apps = store.apps.list();
-  const accounts = store.accounts.list();
+  const apps = visibleApps(s);
+  const accounts = visibleAccounts(s);
   const appName = Object.fromEntries(apps.map((a) => [a.id, a.name]));
   const accountName = Object.fromEntries(accounts.map((a) => [a.id, a.name]));
   const pageLink = (n) => withParams(s, { page: n });
@@ -1123,7 +1179,7 @@ function chargesPage(s) {
               <td><a class="quiet" href="/accounts/${c.accountId}">${accountName[c.accountId] ?? c.accountId}</a></td>
               <td>${chargeStatus(c.status)}${payment ? html`<div class="muted small">${payment.payerName} · ${fmtDate(payment.paidAt)}</div>` : ""}</td>
               <td class="num"><b>${fmtMoney(c.amount)}</b>${c.amount !== c.baseAmount ? html`<div class="muted small">pedido ${fmtMoney(c.baseAmount)}</div>` : ""}</td>
-              <td class="t-act"><div class="row"><a class="btn btn-small" href="/c/${c.id}" target="_blank" rel="noopener">Página de pago</a>${c.status === "pending" ? html`${postButton(`/charges/${c.id}/cancel`, "Cancelar", csrf, { tone: "danger", confirm: "¿Cancelar este cobro? Su página de pago dirá que fue cancelado.", small: true })}` : ""}</div></td>
+              <td class="t-act"><div class="row"><a class="btn btn-small" href="/c/${c.id}" target="_blank" rel="noopener">Página de pago</a>${c.status === "pending" && s.scope.can(c.appId, "manage") ? html`${postButton(`/charges/${c.id}/cancel`, "Cancelar", csrf, { tone: "danger", confirm: "¿Cancelar este cobro? Su página de pago dirá que fue cancelado.", small: true })}` : ""}</div></td>
             </tr>`;
           })}</tbody></table></div>`}
       </div>
@@ -1136,6 +1192,8 @@ function chargesPage(s) {
 
 function cancelCharge(s, id) {
   const { store } = s.ctx;
+  const c = store.charges.get(id);
+  if (!c || !s.scope.can(c.appId, "manage")) return notFound(s, "Cobro no encontrado.");
   if (store.charges.cancel(id)) s.audit("Canceló un cobro", id);
   return redirect(s.res, "/charges?ok=canceled");
 }
@@ -1159,45 +1217,68 @@ function inboxPage(s) {
     active: "/inbox",
     body: html`
       <div class="head"><div><h1>Correos rechazados</h1><p class="muted">Lo que llegó y no contó como pago, con el motivo. Se guardan 7 días.</p></div></div>
-      <div class="card">${inboxTable(s.ctx.store.inbox.list({ limit: 200 }))}</div>`,
+      <div class="card">${inboxTable(s.ctx.store.inbox.list({ appIds: s.scope.appIds, limit: 200 }))}</div>`,
   });
 }
 
-// ---------- settings, admins, my account, audit
+// ---------- settings, people, domains, my account, audit
 
-function settingsPage(s, { error = null, tempPassword = null } = {}) {
+const ROLE_LABEL = { admin: "Administrador", client: "Cliente" };
+const ACCESS_LABEL = { view: "ve", manage: "gestiona" };
+
+/** "Administrador", or the apps a client sees: "Cliente · Tienda (gestiona), Rifas (ve)". */
+function personAccess(store, person, appName) {
+  if (person.role !== "client") return ROLE_LABEL.admin;
+  const grants = Object.entries(store.access.forAdmin(person.id)).filter(([id]) => appName[id]);
+  return `Cliente · ${grants.length ? grants.map(([id, level]) => `${appName[id]} (${ACCESS_LABEL[level]})`).join(", ") : "sin apps"}`;
+}
+
+function settingsPage(s, { error = null } = {}) {
   const { store, config } = s.ctx;
-  const domain = inboundDomain(s.ctx);
   const csrf = s.session.csrf;
-  const admins = store.admins.list();
+  const people = store.admins.list();
+  const domains = store.domains.list();
+  const appName = Object.fromEntries(store.apps.list().map((a) => [a.id, a.name]));
   return page(s, {
     title: "Ajustes",
     active: "/settings",
     status: error ? 400 : 200,
     body: html`
-      <div class="head"><div><h1>Ajustes</h1><p class="muted">Recepción de correos, retención de datos y quién administra pagoradar.</p></div><a class="btn btn-small" href="/audit">${icon("audit")}<span>Registro de cambios</span></a></div>
+      <div class="head"><div><h1>Ajustes</h1><p class="muted">Dominios de recepción, retención de datos y quién entra al panel.</p></div><a class="btn btn-small" href="/audit">${icon("audit")}<span>Registro de cambios</span></a></div>
       ${msg(s)}${flash(error, "bad")}
-      ${tempPassword ? html`<div class="secret card"><h2>Contraseña temporal</h2><p>Dásela a la persona por un canal seguro; tendrá que cambiarla y configurar su código de 2 pasos al entrar. <b>No se volverá a mostrar.</b></p><p>${copyable(tempPassword)}</p></div>` : ""}
+      <div class="card">
+        ${section("Dominios de recepción", "Las direcciones de las cuentas (algo@dominio). Pueden estar en tu Cloudflare (tu Worker sirve para todos) o en el de un cliente (un Worker por cuenta).", html`
+          ${domains.length
+            ? html`<ul class="list">${domains.map((d) => html`<li>
+                <span class="list-ico">${icon("inbox")}</span>
+                <div class="list-main"><b>${d.name}</b><span>${cfLabel(store, d)} · ${d.appIds ? `Solo ${d.appIds.map((id) => appName[id] ?? id).join(", ")}` : "Todas las apps"} · ${d.lastEmailAt ? `último correo ${fmtAgo(d.lastEmailAt)}` : "sin correos aún"}</span></div>
+                ${d.isDefault ? badge("Predeterminado", "ok") : ""}
+                <a class="btn btn-small" href="/domains/${d.name}">Configurar</a>
+              </li>`)}</ul>`
+            : html`<p class="muted small">Aún no hay dominios.</p>`}
+          <div><a class="btn" href="/domains">${icon("plus")}<span>Agregar dominio</span></a></div>`)}
+      </div>
       <form method="post" action="/settings" class="card">
         ${csrfField(csrf)}
-        ${section("Recepción de correos", html`En Cloudflare → Email Routing de ${domain ?? "tu dominio"}: una regla <b>Catch-all</b> con acción <b>Send to a Worker</b> → tu Worker de pagoradar. Así cada cuenta nueva funciona sin tocar Cloudflare.`, html`
-          <label>Dominio de recepción <span class="hint">Las cuentas nuevas reciben en <code>algo@dominio</code>.</span><input type="text" name="inboundDomain" value="${domain ?? ""}" pattern="[a-z0-9.-]+\\.[a-z]{2,}" required placeholder="pagos.tudominio.com"></label>`)}
         ${section("Datos", "Los correos rechazados se guardan 7 días; las entregas, 30.", html`
           <label>Días que se guardan los pagos <span class="hint">Entre 30 y 3650.</span><input type="number" name="retentionDays" min="30" max="3650" value="${store.settings.get("retention_days", String(config.retentionDays ?? 180))}"></label>`)}
         <div class="form-actions"><button class="btn btn-primary" type="submit">Guardar cambios</button></div>
       </form>
       <div class="card">
-        ${section("Administradores", "Cada uno entra con su correo, su contraseña y su código de 2 pasos.", html`
-          <ul class="list">${admins.map((a) => html`<li>
+        ${section("Personas con acceso", "Los administradores ven todo. Un cliente solo ve las apps que le asignes, para verlas o para gestionarlas. Todos entran con contraseña y código de 2 pasos.", html`
+          <ul class="list">${people.map((a) => html`<li>
             <span class="list-ico">${icon("user")}</span>
-            <div class="list-main"><b>${a.name || a.email}</b><span>${a.name ? `${a.email} · ` : ""}último ingreso ${a.lastLoginAt ? fmtAgo(a.lastLoginAt) : "nunca"}</span></div>
+            <div class="list-main"><b>${a.name || a.email}</b><span>${a.name ? `${a.email} · ` : ""}${personAccess(store, a, appName)} · último ingreso ${a.lastLoginAt ? fmtAgo(a.lastLoginAt) : "nunca"}</span></div>
             ${a.totpEnabled ? badge("2 pasos", "ok") : badge("Sin 2 pasos", "warn")}
-            ${a.id === s.admin.id ? html`<span class="muted small">Tú</span>` : postButton(`/settings/admins/${a.id}/delete`, "Quitar", csrf, { tone: "danger", small: true, confirm: `¿Quitar a ${a.email}?` })}
+            ${a.id === s.admin.id
+              ? html`<span class="muted small">Tú</span>`
+              : html`<a class="btn btn-small" href="/settings/admins/${a.id}">Permisos</a>${postButton(`/settings/admins/${a.id}/delete`, "Quitar", csrf, { tone: "danger", small: true, confirm: `¿Quitar a ${a.email}?` })}`}
           </li>`)}</ul>
           <form method="post" action="/settings/admins" class="input-group">
             ${csrfField(csrf)}
-            <input type="email" name="email" placeholder="correo@ejemplo.com" required aria-label="Correo del nuevo administrador">
-            <button class="btn" type="submit">${icon("plus")}<span>Agregar administrador</span></button>
+            <input type="email" name="email" placeholder="correo@ejemplo.com" required aria-label="Correo de la persona">
+            <select name="role" aria-label="Rol"><option value="client">Cliente (solo sus apps)</option><option value="admin">Administrador (todo)</option></select>
+            <button class="btn" type="submit">${icon("plus")}<span>Agregar</span></button>
           </form>`)}
       </div>`,
   });
@@ -1205,25 +1286,70 @@ function settingsPage(s, { error = null, tempPassword = null } = {}) {
 
 function saveSettings(s) {
   const { store } = s.ctx;
-  const domain = String(s.form.inboundDomain ?? "").trim().toLowerCase();
   const days = Number(s.form.retentionDays);
-  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) return settingsPage(s, { error: "El dominio no es válido." });
   if (!Number.isInteger(days) || days < 30 || days > 3650) return settingsPage(s, { error: "Los días deben estar entre 30 y 3650." });
-  store.settings.set("inbound_domain", domain);
   store.settings.set("retention_days", days);
-  s.audit("Cambió los ajustes", null, `dominio ${domain} · ${days} días`);
+  s.audit("Cambió los ajustes", null, `${days} días`);
   return redirect(s.res, "/settings?ok=saved");
 }
 
 async function createAdmin(s) {
   const { store } = s.ctx;
   const email = String(s.form.email ?? "").trim().toLowerCase();
+  const role = s.form.role === "admin" ? "admin" : "client";
   if (!EMAIL_RE.test(email)) return settingsPage(s, { error: "Escribe un correo válido." });
-  if (store.admins.byEmail(email)) return settingsPage(s, { error: "Ese correo ya es administrador." });
+  if (store.admins.byEmail(email)) return settingsPage(s, { error: "Ese correo ya tiene acceso." });
   const temp = randomToken(12);
-  store.admins.create({ email, passwordHash: await hashPassword(temp), mustChangePassword: true });
-  s.audit("Agregó un administrador", email);
-  return settingsPage(s, { tempPassword: temp });
+  const person = store.admins.create({ email, role, passwordHash: await hashPassword(temp), mustChangePassword: true });
+  s.audit(role === "admin" ? "Agregó un administrador" : "Agregó un cliente", email);
+  return personPage(s, person.id, { tempPassword: temp });
+}
+
+/** A person's role and, for a client, what they may do with each app. */
+function personPage(s, id, { error = null, tempPassword = null } = {}) {
+  const { store } = s.ctx;
+  const person = store.admins.get(id);
+  if (!person) return notFound(s);
+  const apps = store.apps.list();
+  const grants = store.access.forAdmin(id);
+  const self = id === s.admin.id;
+  return page(s, {
+    title: person.email,
+    active: "/settings",
+    status: error ? 400 : 200,
+    body: html`
+      <div class="head"><a class="back" href="/settings">← Ajustes</a><div><h1>${person.name || person.email}</h1><p class="muted">${person.email}</p></div></div>
+      ${msg(s)}${flash(error, "bad")}
+      ${tempPassword ? html`<div class="secret card"><h2>Contraseña temporal</h2><p>Dásela a la persona por un canal seguro; tendrá que cambiarla y configurar su código de 2 pasos al entrar. <b>No se volverá a mostrar.</b></p><p>${copyable(tempPassword)}</p></div>` : ""}
+      <form method="post" action="/settings/admins/${id}" class="card">
+        ${csrfField(s.session.csrf)}
+        ${section("Rol", self ? "No puedes cambiar tu propio rol." : "Un administrador ve y cambia todo, también los ajustes y las demás personas.", html`
+          <div class="checks">${Object.entries(ROLE_LABEL).map(([v, l]) => html`<label><input type="radio" name="role" value="${v}"${person.role === v ? raw(" checked") : ""}${self ? raw(" disabled") : ""}> ${l}</label>`)}</div>`)}
+        ${section("Apps del cliente", "Solo cuenta si el rol es Cliente. Ver: pagos, cobros, cuentas y CSV. Gestionar: además crear y editar cuentas, webhook, API keys, cancelar cobros y asociar pagos.", apps.length
+          ? html`${apps.map((a) => html`<label>${a.name} <select name="access_${a.id}">
+              <option value="">Sin acceso</option>
+              ${ACCESS_LEVELS.map((level) => html`<option value="${level}"${grants[a.id] === level ? raw(" selected") : ""}>${level === "view" ? "Ver" : "Gestionar"}</option>`)}
+            </select></label>`)}`
+          : html`<p class="muted small">Aún no hay apps.</p>`)}
+        <div class="form-actions"><button class="btn btn-primary" type="submit">Guardar permisos</button></div>
+      </form>`,
+  });
+}
+
+function savePerson(s, id) {
+  const { store } = s.ctx;
+  const person = store.admins.get(id);
+  if (!person) return notFound(s);
+  const role = id === s.admin.id ? person.role : s.form.role === "admin" ? "admin" : "client";
+  store.admins.setRole(id, role);
+  if (role === "client") {
+    for (const app of store.apps.list()) {
+      const level = s.form[`access_${app.id}`];
+      store.access.set(id, app.id, ACCESS_LEVELS.includes(level) ? level : null);
+    }
+  }
+  s.audit("Cambió los permisos", person.email, personAccess(store, store.admins.get(id), Object.fromEntries(store.apps.list().map((a) => [a.id, a.name]))));
+  return redirect(s.res, `/settings/admins/${id}?ok=saved`);
 }
 
 function deleteAdmin(s, id) {
@@ -1231,8 +1357,169 @@ function deleteAdmin(s, id) {
   const target = store.admins.get(id);
   if (target && id !== s.admin.id) {
     store.admins.remove(id);
-    s.audit("Quitó un administrador", target.email);
+    s.audit(target.role === "client" ? "Quitó un cliente" : "Quitó un administrador", target.email);
   }
+  return redirect(s.res, "/settings?ok=deleted");
+}
+
+/** Where a domain's email is handled: your Cloudflare (your Worker) or one of your customers' accounts. */
+function cfSelect(s, current, newName = "") {
+  const accounts = s.ctx.store.cfAccounts.list();
+  return html`<label>Cuenta de Cloudflare <span class="hint">Donde está el dominio. Cada cuenta necesita su Worker una sola vez, para todos sus dominios.</span><select name="cf">
+      <option value="mine"${!current ? raw(" selected") : ""}>Mi cuenta (el Worker que ya tengo)</option>
+      ${accounts.map((a) => html`<option value="${a.id}"${current === a.id ? raw(" selected") : ""}>${a.name}</option>`)}
+      <option value="new"${current === "new" ? raw(" selected") : ""}>Otra cuenta (de un cliente)…</option>
+    </select></label>
+    <label>Nombre de la otra cuenta <span class="hint">Solo si elegiste "Otra cuenta". Ej. "Cloudflare de Ana".</span><input type="text" name="cfName" maxlength="60" value="${newName}" placeholder="Cloudflare de Ana"></label>`;
+}
+
+/** The Cloudflare account chosen in cfSelect: { cfAccountId } (null = yours), { newName } or { error }. */
+function readCf(s) {
+  const v = String(s.form.cf ?? "mine");
+  if (v === "mine") return { cfAccountId: null };
+  if (v === "new") {
+    const newName = String(s.form.cfName ?? "").trim();
+    return newName && newName.length <= 60 ? { newName } : { error: "Escribe el nombre de la otra cuenta de Cloudflare (máximo 60 caracteres)." };
+  }
+  return s.ctx.store.cfAccounts.get(v) ? { cfAccountId: v } : { error: "Elige una cuenta de Cloudflare." };
+}
+
+const cfLabel = (store, d) => (d.cfAccountId ? (store.cfAccounts.get(d.cfAccountId)?.name ?? d.cfAccountId) : "Mi Cloudflare");
+
+function domainsPage(s, { error = null, value = "" } = {}) {
+  return page(s, {
+    title: "Agregar dominio",
+    active: "/settings",
+    status: error ? 400 : 200,
+    body: html`
+      <div class="head"><a class="back" href="/settings">← Ajustes</a><div><h1>Agregar dominio</h1><p class="muted">Un dominio (o subdominio) donde las cuentas reciben los avisos. Puede estar en tu Cloudflare o en el de un cliente.</p></div></div>
+      ${flash(error, "bad")}
+      <form method="post" action="/domains" class="card">
+        ${csrfField(s.session.csrf)}
+        ${section("Dominio", "Usa un subdominio (ej. pagos.tudominio.com) para no tocar el correo del dominio principal. En tu propia cuenta de Cloudflare solo hay que agregar una regla.", html`
+          <label>Dominio <input type="text" name="name" required maxlength="120" value="${value}" placeholder="pagos.tudominio.com" autocapitalize="off" spellcheck="false"></label>
+          ${cfSelect(s, s.form.cf === "new" ? "new" : s.form.cf && s.form.cf !== "mine" ? s.form.cf : null, String(s.form.cfName ?? ""))}`)}
+        <div class="form-actions"><a class="btn btn-ghost" href="/settings">Cancelar</a><button class="btn btn-primary" type="submit">Agregar y ver cómo configurarlo</button></div>
+      </form>`,
+  });
+}
+
+function createDomain(s) {
+  const { store } = s.ctx;
+  const name = String(s.form.name ?? "").trim().toLowerCase().replace(/\.$/, "");
+  if (name.length > 120 || !DOMAIN_RE.test(name)) return domainsPage(s, { error: "El dominio no es válido.", value: name });
+  if (store.domains.get(name)) return domainsPage(s, { error: "Ese dominio ya está agregado.", value: name });
+  const cf = readCf(s);
+  if (cf.error) return domainsPage(s, { error: cf.error, value: name });
+  const cfAccountId = cf.newName ? store.cfAccounts.create(cf.newName).id : cf.cfAccountId;
+  store.domains.create(name, { cfAccountId });
+  s.audit("Agregó el dominio", name, cfLabel(store, store.domains.get(name)));
+  return redirect(s.res, `/domains/${name}?ok=created`);
+}
+
+function domainPage(s, name, { error = null, secretShown = null } = {}) {
+  const { store, config } = s.ctx;
+  const d = store.domains.get(name);
+  if (!d) return notFound(s, "Dominio no encontrado.");
+  const csrf = s.session.csrf;
+  const apps = store.apps.list();
+  const accounts = store.domains.accountCount(d.name);
+  const cf = d.cfAccountId ? store.cfAccounts.get(d.cfAccountId) : null;
+  const siblings = store.domains.inCfAccount(d.cfAccountId).filter((x) => x.name !== d.name);
+  // Another domain of the same Cloudflare account already gets email: its Worker is there.
+  const workerUp = siblings.find((x) => x.lastEmailAt) ?? (d.lastEmailAt ? d : null);
+  const publicUrl = config.publicUrl ?? `https://${s.req.headers.host ?? "pagoradar.tudominio.com"}`;
+  const workerSteps = html`<b>Workers &amp; Pages → Create → Hello World</b>, nombre ${copyable("pagoradar-email")} → <b>Edit code</b>: pega <a href="/static/pagoradar-email-worker.js" download="pagoradar-email-worker.js">el código del Worker</a> → <b>Deploy</b>. En el Worker, <b>Settings → Variables and Secrets</b>:
+    <div class="mt">Texto <code>PAGORADAR_URL</code> = ${copyable(publicUrl)}</div>
+    <div class="mt">Secret <code>INGEST_SECRET</code> = ${cf
+      ? secretShown
+        ? html`(el de arriba)`
+        : html`<details class="reveal"><summary>Mostrar secreto de ${cf.name}</summary><div class="mt">${copyable(store.cfAccounts.secret(cf.id))}</div></details>`
+      : html`el mismo <code>INGEST_SECRET</code> de pagoradar en Dokploy`}</div>`;
+  return page(s, {
+    title: d.name,
+    active: "/settings",
+    status: error ? 400 : 200,
+    body: html`
+      <div class="head"><a class="back" href="/settings">← Ajustes</a><div><h1>${d.name} ${d.isDefault ? badge("Predeterminado", "ok") : ""}</h1><p class="muted">${cfLabel(store, d)} · ${accounts} ${accounts === 1 ? "cuenta" : "cuentas"} · ${d.lastEmailAt ? `último correo ${fmtAgo(d.lastEmailAt)}` : "todavía no ha llegado ningún correo"}</p></div>
+        ${d.isDefault ? "" : postButton(`/domains/${d.name}/default`, "Hacer predeterminado", csrf)}</div>
+      ${msg(s)}${flash(error, "bad")}
+      ${secretShown ? html`<div class="secret card"><h2>Nuevo secreto del Worker de ${cf?.name}</h2><p>Ponlo en el Worker de esa cuenta de Cloudflare (<code>INGEST_SECRET</code>). Hasta entonces, los correos de todos sus dominios se rechazan.</p><p>${copyable(secretShown)}</p></div>` : ""}
+      <div class="card">
+        <h2>Configurar en Cloudflare</h2>
+        <p class="muted small">En ${cf ? html`la cuenta <b>${cf.name}</b>` : "tu cuenta de Cloudflare"}, donde está ${d.name} (o su dominio principal). Se hace una sola vez: después, cada cuenta nueva en este dominio funciona sin tocar Cloudflare.</p>
+        <ol class="steps">
+          <li><b>Email Routing</b> de ${d.name} → actívalo. Si es un subdominio (ej. <code>pagos</code> de <code>pagos.cliente.com</code>): <b>Settings → Subdomains → Add subdomain</b> con esa primera parte.</li>
+          <li>${cf
+            ? workerUp && workerUp.name !== d.name
+              ? html`${badge("Ya está", "ok")} El Worker de ${cf.name} ya recibe correos (de ${workerUp.name}): no hay que hacer nada aquí. <details><summary class="small">Ver cómo se configuró</summary><div class="mt">${workerSteps}</div></details>`
+              : html`<b>Solo la primera vez en ${cf.name}</b>: ${workerSteps}${siblings.length ? html`<p class="small muted">Este mismo Worker sirve para sus otros dominios: ${siblings.map((x) => x.name).join(", ")}.</p>` : ""}`
+            : html`Usa el Worker <code>pagoradar-email</code> que ya tienes en tu cuenta: no hay que crear otro. <details><summary class="small">¿Aún no lo tienes?</summary><div class="mt">${workerSteps}</div></details>`}</li>
+          <li><b>Email Routing → Routing rules → Catch-all address</b> de ${d.name} → acción <b>Send to a Worker</b> → <code>pagoradar-email</code>.</li>
+          <li>${d.lastEmailAt ? html`${badge("Listo", "ok")} Llegan correos (último: ${fmtDate(d.lastEmailAt)}).` : html`Crea una cuenta en este dominio y agrega su dirección en Gmail: el correo de confirmación de Gmail debe aparecer en la cuenta.`}</li>
+        </ol>
+      </div>
+      <form method="post" action="/domains/${d.name}" class="card">
+        ${csrfField(csrf)}
+        ${section("Cloudflare", "Si mueves el dominio a otra cuenta, configura allí el Worker (si no lo tiene) y la regla catch-all.", cfSelect(s, d.cfAccountId))}
+        ${section("Quién lo puede usar", "Las apps que pueden crear cuentas en este dominio (en el panel y por API). Las cuentas que ya existen siguen funcionando aunque cambies esto.", html`
+          <div class="checks">
+            <label><input type="radio" name="scope" value="all"${d.appIds ? "" : raw(" checked")}> Todas las apps</label>
+            <label><input type="radio" name="scope" value="some"${d.appIds ? raw(" checked") : ""}> Solo estas:</label>
+          </div>
+          <div class="checks">${apps.map((a) => html`<label><input type="checkbox" name="apps" value="${a.id}"${d.appIds?.includes(a.id) ? raw(" checked") : ""}> ${a.name}</label>`)}</div>`)}
+        <div class="form-actions"><button class="btn btn-primary" type="submit">Guardar</button></div>
+      </form>
+      <div class="card danger-zone">
+        <h2>${cf ? "Secreto y eliminar" : "Eliminar"}</h2>
+        <p class="muted small">${d.isDefault ? "Es el predeterminado: para eliminarlo, primero haz predeterminado otro." : accounts ? "Tiene cuentas, así que no se puede eliminar." : "Sin cuentas: se puede eliminar."}</p>
+        <div class="row mt">
+          ${cf ? postButton(`/domains/${d.name}/rotate`, `Cambiar secreto del Worker de ${cf.name}`, csrf, { tone: "danger", confirm: `¿Cambiar el secreto? Los correos de todos los dominios de ${cf.name} se rechazan hasta que pongas el nuevo en su Worker.` }) : ""}
+          ${!d.isDefault && !accounts ? postButton(`/domains/${d.name}/delete`, "Eliminar", csrf, { tone: "danger", confirm: `¿Eliminar ${d.name}?` }) : ""}
+        </div>
+      </div>`,
+  });
+}
+
+function updateDomain(s, name) {
+  const { store } = s.ctx;
+  const d = store.domains.get(name);
+  if (!d) return notFound(s, "Dominio no encontrado.");
+  const known = new Set(store.apps.list().map((a) => a.id));
+  const appIds = s.form.scope === "some" ? list(s.form.apps).filter((id) => known.has(id)) : null;
+  if (appIds && appIds.length === 0) return domainPage(s, name, { error: "Elige al menos una app, o marca Todas las apps." });
+  const cf = s.form.cf === undefined ? { cfAccountId: d.cfAccountId } : readCf(s);
+  if (cf.error) return domainPage(s, name, { error: cf.error });
+  const cfAccountId = cf.newName ? store.cfAccounts.create(cf.newName).id : cf.cfAccountId;
+  store.domains.setApps(d.name, appIds);
+  if (cfAccountId !== d.cfAccountId) {
+    store.domains.setCfAccount(d.name, cfAccountId);
+    if (d.cfAccountId) store.cfAccounts.removeIfUnused(d.cfAccountId);
+  }
+  const updated = store.domains.get(d.name);
+  s.audit("Editó el dominio", d.name, `${cfLabel(store, updated)} · ${appIds ? appIds.join(", ") : "todas las apps"}`);
+  return redirect(s.res, `/domains/${d.name}?ok=saved`);
+}
+
+function domainAction(s, name, action) {
+  const { store } = s.ctx;
+  const d = store.domains.get(name);
+  if (!d) return notFound(s, "Dominio no encontrado.");
+  if (action === "rotate") {
+    if (!d.cfAccountId) return domainPage(s, d.name, { error: "Este dominio usa tu Worker: su secreto es el INGEST_SECRET del servidor." });
+    const secret = store.cfAccounts.rotateSecret(d.cfAccountId);
+    s.audit("Cambió el secreto del Worker", cfLabel(store, d), d.name);
+    return domainPage(s, d.name, { secretShown: secret });
+  }
+  if (action === "default") {
+    store.settings.set("inbound_domain", d.name);
+    s.audit("Cambió el dominio predeterminado", d.name);
+    return redirect(s.res, `/domains/${d.name}?ok=default`);
+  }
+  if (d.isDefault || store.domains.accountCount(d.name) > 0) return domainPage(s, d.name, { error: "No se puede eliminar: es el predeterminado o tiene cuentas." });
+  store.domains.remove(d.name);
+  if (d.cfAccountId) store.cfAccounts.removeIfUnused(d.cfAccountId);
+  s.audit("Eliminó el dominio", d.name);
   return redirect(s.res, "/settings?ok=deleted");
 }
 

@@ -163,6 +163,7 @@ Content-Type: application/json</code></pre>
 });
 // account.setup.forwardTo → "tienda-de-ana-x7k2qp@pagos.tudominio.com"</code></pre>
   </div>
+  <p>Opcional <code>domain</code>: el dominio de la dirección, si tu app puede usar varios (ver <code>GET /v1/domains</code>). Sin él se usa el predeterminado.</p>
 <pre class="response"><code>201 Created
 {
   "id": "acc_k3m9x2p7q4wz",
@@ -179,6 +180,8 @@ Content-Type: application/json</code></pre>
   "createdAt": "2026-10-01T15:20:11.000Z"
 }</code></pre>
 
+  <div class="endpoint"><span class="method get">GET</span><code>/v1/domains</code><span>Los dominios donde tu app puede crear cuentas</span></div>
+<pre class="response"><code>{ "domains": [{ "name": "pagos.tudominio.com", "default": true }, { "name": "pagos.cliente.com", "default": false }] }</code></pre>
   <div class="endpoint"><span class="method get">GET</span><code>/v1/accounts?tenantRef=org_42</code><span>Listar (de la app o de un cliente)</span></div>
   <div class="endpoint"><span class="method get">GET</span><code>/v1/accounts/{id}</code><span>Una cuenta: estado y código de Gmail</span></div>
   <div class="endpoint"><span class="method patch">PATCH</span><code>/v1/accounts/{id}</code><span>Cambiar <code>name</code>, <code>ownerEmails</code>, <code>banks</code>, <code>tenantRef</code>, <code>payKey</code>, <code>payHolder</code> o <code>active</code></span></div>

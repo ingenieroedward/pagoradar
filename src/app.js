@@ -3,13 +3,13 @@ import { handleApi } from "./api.js";
 import { handleCheckout } from "./checkout.js";
 import { handleDocs } from "./docs.js";
 import { readBody, sendJson } from "./http.js";
-import { MAX_EMAIL_BYTES, ingestEmail, ingestSignature, validIngestSignature } from "./ingest.js";
+import { MAX_EMAIL_BYTES, ingestAuth, ingestEmail, ingestSignature } from "./ingest.js";
 
 export { ingestSignature };
 
 /**
  * pagoradar's HTTP side, as a plain (req, res) handler:
- *   POST /ingest   raw email from the Cloudflare Worker (signed with INGEST_SECRET)
+ *   POST /ingest   raw email from a Cloudflare Worker (signed with INGEST_SECRET, or with its domain's secret)
  *   /v1/*          API for apps (Bearer API key) — see api.js
  *   /c/<id>        public checkout page of a charge — see checkout.js
  *   /docs          developer documentation — see docs.js
@@ -35,7 +35,9 @@ export function createApp(ctx) {
       if (path === "/ingest" && req.method === "POST") {
         const raw = await readBody(req, MAX_EMAIL_BYTES);
         if (raw === null) return sendJson(res, 413, { error: "Correo demasiado grande" });
-        if (!validIngestSignature(config.ingestSecret, req.headers, raw)) return sendJson(res, 401, { error: "Firma inválida" });
+        const auth = ingestAuth(store, config.ingestSecret, req.headers, raw);
+        if (!auth.ok) return sendJson(res, 401, { error: "Firma inválida" });
+        if (auth.domain) store.domains.touch(auth.domain.name);
         return sendJson(res, 200, await ingestEmail(store, raw, req.headers["x-pagoradar-to"], { resolver, publicUrl: config.publicUrl, log }));
       }
       if (await handleApi(req, res, url, full)) return;

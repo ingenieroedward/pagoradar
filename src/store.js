@@ -168,6 +168,38 @@ ALTER TABLE charges ADD COLUMN paid_amount_cents INTEGER;
 CREATE INDEX charges_open_base ON charges (account_id, status, base_cents);
 `;
 
+// v5: several receiving domains, and other people's Cloudflare accounts (one Worker each, with its own secret, for
+// all the domains in that account; cf_account_id NULL = yours, whose Worker signs with INGEST_SECRET). Also people
+// who only see some apps (role "client", with "view" or "manage" access per app).
+const V5 = `
+CREATE TABLE cf_accounts (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  secret_enc TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE domains (
+  name TEXT PRIMARY KEY,
+  cf_account_id TEXT,
+  app_ids TEXT,
+  created_at TEXT NOT NULL,
+  last_email_at TEXT
+);
+ALTER TABLE admins ADD COLUMN role TEXT NOT NULL DEFAULT 'admin';
+CREATE TABLE admin_apps (
+  admin_id TEXT NOT NULL,
+  app_id TEXT NOT NULL,
+  access TEXT NOT NULL,
+  PRIMARY KEY (admin_id, app_id)
+);
+`;
+
+export const ROLES = ["admin", "client"];
+export const ACCESS_LEVELS = ["view", "manage"];
+
+/** `col IN (?,?,…)` for a list of ids; an empty list matches nothing. */
+const inList = (col, ids) => (ids.length ? { sql: `${col} IN (${ids.map(() => "?").join(",")})`, args: ids } : { sql: "0", args: [] });
+
 export const newId = (prefix) => `${prefix}_${Date.now().toString(36)}${randomBytes(8).toString("hex")}`;
 const now = () => new Date().toISOString();
 const json = (v, fallback) => {
@@ -185,7 +217,7 @@ export function openStore(path, { masterKey } = {}) {
   db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
   db.exec(V1);
   const version = db.prepare("PRAGMA user_version").get().user_version;
-  for (const [v, sql] of [[2, V2], [3, V3], [4, V4]]) {
+  for (const [v, sql] of [[2, V2], [3, V3], [4, V4], [5, V5]]) {
     if (version >= v) continue;
     db.exec("BEGIN");
     try {
@@ -206,6 +238,66 @@ export function openStore(path, { masterKey } = {}) {
   const settings = {
     get: (key, fallback = null) => one("SELECT value FROM settings WHERE key = ?", key)?.value ?? fallback,
     set: (key, value) => run("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", key, String(value)),
+  };
+
+  // ---------- someone else's Cloudflare account: one Worker there, signing with this secret, serves all its domains
+  const toCf = (r) => r && { id: r.id, name: r.name, createdAt: r.created_at };
+  const newIngestSecret = () => `ing_${randomToken(32)}`;
+  const cfAccounts = {
+    list: () => all("SELECT * FROM cf_accounts ORDER BY created_at").map(toCf),
+    get: (id) => toCf(one("SELECT * FROM cf_accounts WHERE id = ?", id)),
+    create(name) {
+      const id = `cf_${randomCode(10)}`;
+      run("INSERT INTO cf_accounts (id, name, secret_enc, created_at) VALUES (?,?,?,?)", id, name, encrypt(masterKey, newIngestSecret()), now());
+      return cfAccounts.get(id);
+    },
+    /** What the Worker in that account signs its emails with (INGEST_SECRET there). */
+    secret(id) {
+      const r = one("SELECT secret_enc FROM cf_accounts WHERE id = ?", id);
+      return r ? decrypt(masterKey, r.secret_enc) : null;
+    },
+    rotateSecret(id) {
+      const secret = newIngestSecret();
+      run("UPDATE cf_accounts SET secret_enc = ? WHERE id = ?", encrypt(masterKey, secret), id);
+      return secret;
+    },
+    /** Forgets the account once none of its domains is left. */
+    removeIfUnused: (id) => run("DELETE FROM cf_accounts WHERE id = ? AND NOT EXISTS (SELECT 1 FROM domains WHERE cf_account_id = ?)", id, id).changes === 1,
+  };
+
+  // ---------- receiving domains. The default one is the "inbound_domain" setting (older versions only had that).
+  const toDomain = (r) =>
+    r && {
+      name: r.name,
+      cfAccountId: r.cf_account_id,
+      appIds: r.app_ids ? json(r.app_ids, []) : null,
+      createdAt: r.created_at,
+      lastEmailAt: r.last_email_at,
+      isDefault: r.name === settings.get("inbound_domain"),
+    };
+  const domains = {
+    /** Every domain, the default first. The default (set by older versions, the env or the legacy import) gets its row here. */
+    list() {
+      const def = settings.get("inbound_domain");
+      if (def && !one("SELECT 1 FROM domains WHERE name = ?", def)) domains.create(def);
+      return all("SELECT * FROM domains ORDER BY name = ? DESC, created_at", def ?? "").map(toDomain);
+    },
+    get: (name) => toDomain(one("SELECT * FROM domains WHERE name = ?", String(name ?? "").trim().toLowerCase())),
+    /** The domains an app may create accounts in (`appIds` null = every app), the default first. */
+    forApp: (appId) => domains.list().filter((d) => !d.appIds || d.appIds.includes(appId)),
+    /** `cfAccountId` null: the domain is in your Cloudflare account, served by your Worker. */
+    create(name, { appIds = null, cfAccountId = null } = {}) {
+      const n = String(name).trim().toLowerCase();
+      run("INSERT INTO domains (name, cf_account_id, app_ids, created_at) VALUES (?,?,?,?)", n, cfAccountId, appIds ? JSON.stringify(appIds) : null, now());
+      if (!settings.get("inbound_domain")) settings.set("inbound_domain", n);
+      return domains.get(n);
+    },
+    setApps: (name, appIds) => run("UPDATE domains SET app_ids = ? WHERE name = ?", appIds ? JSON.stringify(appIds) : null, name).changes === 1,
+    setCfAccount: (name, cfAccountId) => run("UPDATE domains SET cf_account_id = ? WHERE name = ?", cfAccountId, name).changes === 1,
+    inCfAccount: (cfAccountId) => all("SELECT * FROM domains WHERE cf_account_id IS ? ORDER BY created_at", cfAccountId).map(toDomain),
+    touch: (name) => run("UPDATE domains SET last_email_at = ? WHERE name = ?", now(), name),
+    accountCount: (name) => one("SELECT COUNT(*) AS n FROM accounts WHERE address LIKE ?", `%@${name}`).n,
+    remove: (name) => run("DELETE FROM domains WHERE name = ?", name).changes === 1,
   };
 
   // ---------- apps (the projects that receive payments: Ibirifas, another SaaS…)
@@ -398,10 +490,15 @@ export function openStore(path, { masterKey } = {}) {
     get: (id) => toPayment(one("SELECT * FROM payments WHERE id = ?", id)),
     listForApp: (appId, { since, limit = 100 } = {}) =>
       all("SELECT * FROM payments WHERE source = ? AND received_at > ? ORDER BY received_at ASC, id ASC LIMIT ?", appId, since ?? "", Math.min(Math.max(1, limit), 500)).map(toPayment),
-    search({ appId, accountId, bank, q, from, to, limit = 50, offset = 0 } = {}) {
+    /** `appIds`: only these apps (what a client may see); undefined = all. */
+    search({ appId, appIds, accountId, bank, q, from, to, limit = 50, offset = 0 } = {}) {
       const where = [];
       const args = [];
       if (appId) where.push("source = ?"), args.push(appId);
+      if (appIds) {
+        const f = inList("source", appIds);
+        where.push(f.sql), args.push(...f.args);
+      }
       if (accountId) where.push("account_id = ?"), args.push(accountId);
       if (bank) where.push("bank = ?"), args.push(bank);
       if (q) where.push("(payer_name_normalized LIKE ? OR reference LIKE ?)"), args.push(`%${String(q).toUpperCase()}%`, `%${q}%`);
@@ -415,7 +512,10 @@ export function openStore(path, { masterKey } = {}) {
         rows: all(`SELECT * ${sql} ORDER BY paid_at DESC LIMIT ? OFFSET ?`, ...args, limit, offset).map(toPayment),
       };
     },
-    stats: (sinceIso) => one("SELECT COUNT(*) AS n, COALESCE(SUM(amount_cents), 0) AS cents FROM payments WHERE received_at >= ?", sinceIso),
+    stats(sinceIso, appIds) {
+      const f = appIds ? inList("source", appIds) : { sql: "1", args: [] };
+      return one(`SELECT COUNT(*) AS n, COALESCE(SUM(amount_cents), 0) AS cents FROM payments WHERE received_at >= ? AND ${f.sql}`, sinceIso, ...f.args);
+    },
   };
 
   // ---------- charges: an amount an app asks its customer to pay into one of its accounts
@@ -442,10 +542,14 @@ export function openStore(path, { masterKey } = {}) {
       paidAt: r.paid_at,
       canceledAt: r.canceled_at,
     };
-  const chargeWhere = ({ appId, accountId, status, reference, tenantRef, q }) => {
+  const chargeWhere = ({ appId, appIds, accountId, status, reference, tenantRef, q }) => {
     const where = [];
     const args = [];
     if (appId) where.push("c.app_id = ?"), args.push(appId);
+    if (appIds) {
+      const f = inList("c.app_id", appIds);
+      where.push(f.sql), args.push(...f.args);
+    }
     if (accountId) where.push("c.account_id = ?"), args.push(accountId);
     if (status) where.push("c.status = ?"), args.push(status);
     if (reference) where.push("c.reference = ?"), args.push(reference);
@@ -556,7 +660,16 @@ export function openStore(path, { masterKey } = {}) {
   const deliveries = {
     queue: (eventId, appId, url, body, at = now()) =>
       run("INSERT OR IGNORE INTO deliveries (event_id, source, url, body, next_attempt_at, created_at) VALUES (?,?,?,?,?,?)", eventId, appId, url, body, at, at),
-    due: (at = now(), limit = 20) => all("SELECT * FROM deliveries WHERE status = 'pending' AND next_attempt_at <= ? ORDER BY next_attempt_at LIMIT ?", at, limit),
+    /**
+     * The deliveries due at `at`, pushed `leaseMs` into the future so a concurrent deliverDue (the 15 s loop and the
+     * one each ingested email starts) doesn't pick them up too. A send that never finishes (crash) is retried after it.
+     */
+    claimDue(at = now(), limit = 20, leaseMs = 120_000) {
+      const due = all("SELECT * FROM deliveries WHERE status = 'pending' AND next_attempt_at <= ? ORDER BY next_attempt_at LIMIT ?", at, limit);
+      const until = new Date(Date.parse(at) + leaseMs).toISOString();
+      for (const d of due) run("UPDATE deliveries SET next_attempt_at = ? WHERE id = ?", until, d.id);
+      return due;
+    },
     markDelivered: (id, httpStatus, at = now()) =>
       run("UPDATE deliveries SET status = 'delivered', attempts = attempts + 1, last_status = ?, last_error = NULL, delivered_at = ? WHERE id = ?", httpStatus, at, id),
     markFailedAttempt: (id, httpStatus, error, nextAt) =>
@@ -577,8 +690,12 @@ export function openStore(path, { masterKey } = {}) {
         status ?? null,
         limit,
       ),
+    get: (id) => one("SELECT * FROM deliveries WHERE id = ?", id),
     retry: (id, at = now()) => run("UPDATE deliveries SET status = 'pending', next_attempt_at = ? WHERE id = ? AND status != 'delivered'", at, id).changes === 1,
-    countFailed: () => one("SELECT COUNT(*) AS n FROM deliveries WHERE status = 'failed'").n,
+    countFailed(appIds) {
+      const f = appIds ? inList("source", appIds) : { sql: "1", args: [] };
+      return one(`SELECT COUNT(*) AS n FROM deliveries WHERE status = 'failed' AND ${f.sql}`, ...f.args).n;
+    },
   };
 
   // ---------- rejected emails (kept 7 days, so the owner can see why)
@@ -596,9 +713,15 @@ export function openStore(path, { masterKey } = {}) {
         e.link ?? null,
         e.snippet ? e.snippet.slice(0, 1500) : null,
       ),
-    list: ({ accountId, limit = 100 } = {}) =>
-      all("SELECT * FROM inbox WHERE (? IS NULL OR account_id = ?) ORDER BY id DESC LIMIT ?", accountId ?? null, accountId ?? null, limit),
-    countSince: (iso) => one("SELECT COUNT(*) AS n FROM inbox WHERE received_at >= ? AND reason != 'gmail_forwarding_confirmation'", iso).n,
+    /** `appIds`: only emails of these apps' accounts (what a client may see); undefined = all. */
+    list({ accountId, appIds, limit = 100 } = {}) {
+      const f = appIds ? inList("source", appIds) : { sql: "1", args: [] };
+      return all(`SELECT * FROM inbox WHERE (? IS NULL OR account_id = ?) AND ${f.sql} ORDER BY id DESC LIMIT ?`, accountId ?? null, accountId ?? null, ...f.args, limit);
+    },
+    countSince(iso, appIds) {
+      const f = appIds ? inList("source", appIds) : { sql: "1", args: [] };
+      return one(`SELECT COUNT(*) AS n FROM inbox WHERE received_at >= ? AND reason != 'gmail_forwarding_confirmation' AND ${f.sql}`, iso, ...f.args).n;
+    },
   };
 
   // ---------- admins and their sessions
@@ -607,6 +730,7 @@ export function openStore(path, { masterKey } = {}) {
       id: r.id,
       email: r.email,
       name: r.name,
+      role: r.role ?? "admin",
       passwordHash: r.password_hash,
       totpEnabled: Boolean(r.totp_secret_enc),
       totpLastStep: r.totp_last_step,
@@ -620,21 +744,29 @@ export function openStore(path, { masterKey } = {}) {
     list: () => all("SELECT * FROM admins ORDER BY created_at").map(toAdmin),
     get: (id) => toAdmin(one("SELECT * FROM admins WHERE id = ?", id)),
     byEmail: (email) => toAdmin(one("SELECT * FROM admins WHERE email = ?", String(email).trim().toLowerCase())),
-    create({ email, name = null, passwordHash, mustChangePassword = false }) {
+    create({ email, name = null, passwordHash, mustChangePassword = false, role = "admin" }) {
       const id = newId("adm");
       run(
-        "INSERT INTO admins (id, email, name, password_hash, must_change_password, created_at) VALUES (?,?,?,?,?,?)",
+        "INSERT INTO admins (id, email, name, password_hash, must_change_password, role, created_at) VALUES (?,?,?,?,?,?,?)",
         id,
         String(email).trim().toLowerCase(),
         name,
         passwordHash,
         mustChangePassword ? 1 : 0,
+        ROLES.includes(role) ? role : "client",
         now(),
       );
       return admins.get(id);
     },
+    /** An admin sees everything; a client only the apps in `access` (an admin's own grants are dropped). */
+    setRole(id, role) {
+      if (!ROLES.includes(role)) return false;
+      if (role === "admin") run("DELETE FROM admin_apps WHERE admin_id = ?", id);
+      return run("UPDATE admins SET role = ? WHERE id = ?", role, id).changes === 1;
+    },
     remove(id) {
       run("DELETE FROM sessions WHERE admin_id = ?", id);
+      run("DELETE FROM admin_apps WHERE admin_id = ?", id);
       return run("DELETE FROM admins WHERE id = ?", id).changes === 1;
     },
     setPassword: (id, passwordHash) => run("UPDATE admins SET password_hash = ?, must_change_password = 0 WHERE id = ?", passwordHash, id),
@@ -654,6 +786,18 @@ export function openStore(path, { masterKey } = {}) {
       }
     },
     recordLogin: (id) => run("UPDATE admins SET failed_attempts = 0, locked_until = NULL, last_login_at = ? WHERE id = ?", now(), id),
+  };
+
+  // ---------- what each client may do with each app: "view" or "manage"
+  const access = {
+    /** { appId: "view" | "manage" } for one person. */
+    forAdmin: (adminId) => Object.fromEntries(all("SELECT app_id, access FROM admin_apps WHERE admin_id = ?", adminId).map((r) => [r.app_id, r.access])),
+    /** `level` null removes the access. */
+    set(adminId, appId, level) {
+      if (!level) return run("DELETE FROM admin_apps WHERE admin_id = ? AND app_id = ?", adminId, appId);
+      if (!ACCESS_LEVELS.includes(level)) throw new Error(`acceso desconocido: ${level}`);
+      return run("INSERT INTO admin_apps (admin_id, app_id, access) VALUES (?,?,?) ON CONFLICT(admin_id, app_id) DO UPDATE SET access = excluded.access", adminId, appId, level);
+    },
   };
 
   const SESSION_HOURS = 12;
@@ -704,6 +848,8 @@ export function openStore(path, { masterKey } = {}) {
   return {
     db,
     settings,
+    cfAccounts,
+    domains,
     apps,
     keys,
     accounts,
@@ -712,6 +858,7 @@ export function openStore(path, { masterKey } = {}) {
     deliveries,
     inbox,
     admins,
+    access,
     sessions,
     audit,
     /** Retention: rejected emails 7 days, finished deliveries 30 days, audit a year, payments `paymentDays`. */
