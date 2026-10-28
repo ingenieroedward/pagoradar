@@ -20,6 +20,19 @@ export function validIngestSignature(secret, headers, raw, now = Date.now()) {
 }
 
 /**
+ * Who may deliver this email: your Worker, signing with the server's INGEST_SECRET (any address), or the Worker in
+ * someone else's Cloudflare account, signing with that account's secret — only for the domains in that account.
+ * Returns { ok, domain } (domain: the recipient's, when pagoradar knows it).
+ */
+export function ingestAuth(store, secret, headers, raw, now = Date.now()) {
+  const to = String(headers["x-pagoradar-to"] ?? "").trim().toLowerCase();
+  const domain = to.includes("@") ? store.domains.get(to.slice(to.lastIndexOf("@") + 1)) : null;
+  if (validIngestSignature(secret, headers, raw, now)) return { ok: true, domain };
+  const own = domain?.cfAccountId && store.cfAccounts.secret(domain.cfAccountId);
+  return { ok: Boolean(own && validIngestSignature(own, headers, raw, now)), domain };
+}
+
+/**
  * One email from the Worker, addressed to `to`. The receiving account is found by that address; its owner
  * emails and banks decide whether the notice counts (see analyze.js). Returns { result, reason?, paymentId? }.
  */

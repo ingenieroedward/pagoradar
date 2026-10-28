@@ -31,6 +31,20 @@ export function accountDTO(a) {
   };
 }
 
+/**
+ * The domain a new account of `appId` gets its address in: `requested` if the app may use it, otherwise the
+ * default domain (or the first one the app may use). Returns { domain } or { error }.
+ */
+export function chooseDomain(store, appId, requested) {
+  const allowed = store.domains.forApp(appId);
+  if (requested) {
+    const name = String(requested).trim().toLowerCase();
+    return allowed.some((d) => d.name === name) ? { domain: name } : { error: `domain: esta app no puede usar ${name}. Opciones: ${allowed.map((d) => d.name).join(", ") || "ninguna"}` };
+  }
+  if (allowed.length === 0) return { error: "No hay dominio de recepción para esta app" };
+  return { domain: allowed[0].name };
+}
+
 async function readJson(req) {
   const body = await readBody(req, 16 * 1024);
   if (body === null) return { error: "Cuerpo demasiado grande" };
@@ -79,7 +93,8 @@ function accountFields(input, { partial = false } = {}) {
  * The API for apps, authenticated with one of the app's keys (Authorization: Bearer prk_…):
  *   GET    /v1/payments?since=&limit=&account=&tenantRef=   the app's payments in arrival order
  *   POST   /v1/webhooks/test                                a payment.test event to the app's webhook
- *   POST   /v1/accounts                                     create a receiving account (for one of your customers)
+ *   GET    /v1/domains                                      the receiving domains this app may create accounts in
+ *   POST   /v1/accounts                                     create a receiving account (for one of your customers; optional domain)
  *   GET    /v1/accounts?tenantRef=                          the app's receiving accounts
  *   GET    /v1/accounts/:id                                 one account (status, Gmail confirmation code…)
  *   PATCH  /v1/accounts/:id                                 change name / ownerEmails / banks / tenantRef / active
@@ -127,15 +142,21 @@ export async function handleApi(req, res, url, ctx) {
     return result ? done(200, result) : done(400, { error: "Esta app no tiene webhook" });
   }
 
+  if (path === "/v1/domains" && req.method === "GET") {
+    return done(200, { domains: store.domains.forApp(app.id).map((d) => ({ name: d.name, default: d.isDefault })) });
+  }
+
   if (path === "/v1/accounts" && req.method === "POST") {
-    const domain = store.settings.get("inbound_domain") ?? ctx.config?.inboundDomain;
-    if (!domain) return done(503, { error: "pagoradar no tiene dominio de recepción configurado" });
+    if (store.domains.forApp(app.id).length === 0) return done(503, { error: "pagoradar no tiene dominio de recepción para esta app" });
     if (!createLimit(app.id)) return done(429, { error: "Demasiadas cuentas creadas en la última hora" });
     if (store.accounts.list(app.id).length >= MAX_ACCOUNTS_PER_APP) return done(409, { error: "Límite de cuentas de esta app" });
     const body = await readJson(req);
     if (body.error) return done(400, { error: body.error });
     const fields = accountFields(body.value);
     if (fields.error) return done(400, { error: fields.error });
+    if (body.value.domain !== undefined && typeof body.value.domain !== "string") return done(400, { error: "domain: texto" });
+    const { domain, error } = chooseDomain(store, app.id, body.value.domain);
+    if (error) return done(400, { error });
     const created = store.accounts.create({ appId: app.id, domain, tenantRef: null, ...fields.value });
     const { payKey, payHolder } = fields.value;
     const a = payKey || payHolder ? store.accounts.update(created.id, { payKey, payHolder }) : created;

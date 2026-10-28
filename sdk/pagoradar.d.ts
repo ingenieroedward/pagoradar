@@ -115,12 +115,15 @@ export class PagoradarError extends Error {
 export class Pagoradar {
   constructor(options: { apiKey: string; baseUrl: string; fetch?: typeof fetch; timeoutMs?: number });
   accounts: {
-    create(fields: AccountFields & { name: string; ownerEmails: string[] }): Promise<Account>;
+    /** `domain`: one of `domains.list()`; the default domain when left out. */
+    create(fields: AccountFields & { name: string; ownerEmails: string[]; domain?: string }): Promise<Account>;
     list(filters?: { tenantRef?: string }): Promise<Account[]>;
     get(id: string): Promise<Account>;
     update(id: string, fields: AccountFields): Promise<Account>;
     remove(id: string): Promise<{ id: string; deleted: boolean; disabled?: boolean }>;
   };
+  /** The receiving domains this app may create accounts in. */
+  domains: { list(): Promise<{ name: string; default: boolean }[]> };
   charges: {
     create(fields: CreateCharge): Promise<Charge>;
     list(filters?: { status?: ChargeStatus; reference?: string; account?: string; tenantRef?: string; limit?: number; offset?: number }): Promise<{ charges: Charge[]; total: number }>;

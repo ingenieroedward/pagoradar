@@ -198,7 +198,10 @@ ${head}
 </body>
 </html>`}`;
   }
-  const more = NAV.slice(TABS);
+  // A client (someone who only sees some apps) has no Ajustes nor audit log.
+  const client = admin.role === "client";
+  const nav = client ? NAV.filter(([href]) => href !== "/settings") : NAV;
+  const more = nav.slice(TABS);
   const moreActive = more.some(([href]) => href === active) || active === "/me" || active === "/audit";
   const logout = html`<form method="post" action="/logout" class="inline">${csrfField(csrf)}<button class="linkish" type="submit">${icon("logout")}<span>Salir</span></button></form>`;
   return `<!doctype html>${html`<html lang="es">
@@ -206,7 +209,7 @@ ${head}
 <body class="app">
 <aside class="side" aria-label="Menú">
   <a class="brand" href="/">${logo()}<span>pagoradar</span></a>
-  <nav class="side-nav">${NAV.map((n) => navLink(n, active))}</nav>
+  <nav class="side-nav">${nav.map((n) => navLink(n, active))}</nav>
   <div class="side-foot">
     <a href="/docs" target="_blank" rel="noopener">${icon("book")}<span>Documentación</span></a>
     <a href="/me" class="who"${active === "/me" ? raw(' aria-current="page"') : ""}>${icon("user")}<span>${admin.name || admin.email}</span></a>
@@ -221,12 +224,12 @@ ${head}
 ${body}
 </main>
 <nav class="tabbar" aria-label="Secciones">
-  ${NAV.slice(0, TABS).map((n) => navLink(n, active))}
+  ${nav.slice(0, TABS).map((n) => navLink(n, active))}
   <details class="more">
     <summary${moreActive ? raw(' aria-current="page"') : ""}>${icon("more")}<span>Más</span></summary>
     <div class="more-sheet">
       ${more.map((n) => navLink(n, active))}
-      <a href="/audit"${active === "/audit" ? raw(' aria-current="page"') : ""}>${icon("audit")}<span>Auditoría</span></a>
+      ${client ? "" : html`<a href="/audit"${active === "/audit" ? raw(' aria-current="page"') : ""}>${icon("audit")}<span>Auditoría</span></a>`}
       <a href="/me"${active === "/me" ? raw(' aria-current="page"') : ""}>${icon("user")}<span>Mi cuenta</span></a>
       <a href="/docs" target="_blank" rel="noopener">${icon("book")}<span>Documentación</span></a>
       ${logout}

@@ -69,7 +69,7 @@ Montos en cualquier formato (`$ 100`, `100.000`, `$4,000.00`); fechas en hora de
    | `INGEST_SECRET` | Secreto compartido con el Worker. `openssl rand -hex 32` |
    | `MASTER_KEY` | Cifra en la base de datos los secretos de webhook y de 2 pasos. `openssl rand -hex 32`. **Guárdala.** |
    | `PUBLIC_URL` | `https://pagoradar.tudominio.com` (cookies seguras y enlaces) |
-   | `INBOUND_DOMAIN` | Dominio de las direcciones de recepción, ej. `pagos.tudominio.com` (editable en Ajustes) |
+   | `INBOUND_DOMAIN` | Dominio de las direcciones de recepción, ej. `pagos.tudominio.com` (el primero; agrega más en **Ajustes → Dominios**) |
    | `SETUP_TOKEN` | Opcional: token para crear el primer administrador |
 
 3. *Domains*: `pagoradar.tudominio.com` → servicio `pagoradar`, puerto **3000**, HTTPS.
@@ -119,7 +119,7 @@ la variable se puede borrar (se ignora).
 | **Cuentas** | Cada cuenta bancaria que reenvía sus avisos: dirección generada sola, correos dueños, bancos, "id del cliente en tu app", **guía paso a paso** para el Gmail del dueño con el **código de confirmación de Gmail** en pantalla, estado (*Esperando primer aviso* → *Activa*), **probar un aviso (.eml)**, desactivar |
 | **Pagos** | Buscar por app, cuenta, banco, pagador o referencia y fechas; descargar CSV |
 | **Correos** | Lo que llegó y no contó como pago, con el motivo (7 días) |
-| **Ajustes** | Dominio de recepción, días que se guardan los pagos, administradores, registro de cambios |
+| **Ajustes** | **Dominios de recepción** (cada uno con su guía de Cloudflare y el secreto de su Worker), días que se guardan los pagos, **personas con acceso** (administradores y clientes), registro de cambios |
 
 **Seguridad del panel:** contraseña (scrypt) + código de 2 pasos obligatorio para todos (un código no
 sirve dos veces), bloqueo tras intentos fallidos, sesiones de 12 h en cookie `HttpOnly` +
@@ -128,6 +128,12 @@ sitios, cabeceras CSP / `X-Frame-Options`, y un **registro de cambios** de quié
 secretos de webhook y de 2 pasos se guardan **cifrados** con `MASTER_KEY`; las API keys, solo su huella.
 Otro administrador recibe una contraseña temporal y al entrar debe cambiarla y configurar sus 2 pasos.
 
+
+**Acceso para clientes:** en **Ajustes → Personas con acceso** agrega a alguien como **Cliente** y, en
+**Permisos**, elige para cada app **Ver** (pagos, cobros, cuentas, CSV) o **Gestionar** (además crear y
+editar cuentas, URL del webhook, secreto, API keys, cancelar cobros y asociar pagos). Un cliente solo ve sus
+apps; no ve Ajustes, dominios, otras personas ni el registro de cambios, y no puede crear apps ni apagar la
+suya (eso lo haces tú). Entra con contraseña temporal y código de 2 pasos, como un administrador.
 
 **App instalable (PWA):** en el celular, abre el panel y elige "Agregar a la pantalla de inicio" (Android:
 ⋮ → Instalar app; iPhone: Compartir → Agregar a inicio). Abre a pantalla completa con su ícono y accesos
@@ -147,6 +153,24 @@ siempre vienen del servidor y, sin conexión, se muestra un aviso.
 3. *Routing rules* → **Catch-all address** → acción **Send to a Worker** → `pagoradar-email`.
    Con el catch-all, cada cuenta nueva que crees en el panel funciona al instante, sin tocar
    Cloudflare. (Las reglas por dirección que ya tengas siguen sirviendo.)
+
+### Más dominios, o la cuenta de Cloudflare de un cliente
+
+**Ajustes → Dominios → Agregar dominio** (ej. `pagos.cliente.com`) y elige en qué **cuenta de Cloudflare**
+está. La página del dominio trae la guía para copiar.
+
+- **En tu cuenta** (lo más simple): tu Worker de siempre, con el `INGEST_SECRET` del servidor, sirve para
+  todos tus dominios. Por cada dominio nuevo solo activas Email Routing (y el subdominio) y creas la regla
+  catch-all hacia `pagoradar-email`.
+- **En la cuenta de un cliente**: esa cuenta necesita **un Worker, una sola vez**, para todos sus dominios. La
+  guía trae el código del Worker para descargar y sus `PAGORADAR_URL` e `INGEST_SECRET`. Cada cuenta de
+  Cloudflare ajena tiene **su propio secreto**, y su Worker solo puede entregar correos de los dominios de esa
+  cuenta. Si se filtra, lo cambias en la página de cualquiera de sus dominios sin tocar las demás cuentas.
+
+En **Quién lo puede usar** eliges si el dominio es para todas las apps o solo para algunas (por ejemplo, el
+dominio de un cliente solo para su app). Al crear una cuenta, en el panel o por API (`domain`), se elige
+entre los dominios permitidos; sin elegir, se usa el **predeterminado**. Las cuentas que ya existen siguen
+funcionando aunque cambies los permisos del dominio.
 
 ## 3. Por cada cuenta receptora
 
@@ -300,7 +324,7 @@ const event = constructEvent(rawBody, req.headers["pagoradar-signature"], proces
 if (event.type === "charge.paid") await markOrderPaid(event.data.reference);
 ```
 
-También `pr.accounts.create/list/get/update/remove`, `pr.charges.list/get/cancel/pay`,
+También `pr.accounts.create/list/get/update/remove`, `pr.domains.list`, `pr.charges.list/get/cancel/pay`,
 `pr.payments.list` y `pr.webhooks.test`. Los errores son `PagoradarError` con `status`.
 
 ### Cuentas receptoras por API (para tus clientes)
@@ -311,7 +335,8 @@ pagoradar. Todas con `Authorization: Bearer <API key de la app>`:
 
 | | |
 |---|---|
-| `POST /v1/accounts` | `{ "name": "Tienda de Ana", "ownerEmails": ["ana@gmail.com"], "banks": ["nequi_negocios"], "tenantRef": "org_42" }` → `201` con la cuenta |
+| `GET /v1/domains` | Los dominios donde la app puede crear cuentas (`{ domains: [{ name, default }] }`) |
+| `POST /v1/accounts` | `{ "name": "Tienda de Ana", "ownerEmails": ["ana@gmail.com"], "banks": ["nequi_negocios"], "tenantRef": "org_42" }` (opcional `"domain"`) → `201` con la cuenta |
 | `GET /v1/accounts?tenantRef=org_42` | Las cuentas de la app (o de un cliente) |
 | `GET /v1/accounts/<id>` | Una cuenta: `status` (`pending` → `active`, o `disabled`), `confirmationCode` / `confirmationLink` de Gmail, `lastPaymentAt`… |
 | `PATCH /v1/accounts/<id>` | Cambiar `name`, `ownerEmails`, `banks`, `tenantRef`, `payKey`, `payHolder` o `active` |
@@ -358,7 +383,7 @@ Node 22 (usa `node:sqlite`, sin dependencias nativas). Dependencias: `mailauth` 
 - Si cambias **el dominio de pagoradar**: Dokploy → *Domains* y `PUBLIC_URL`, y en el Worker la
   variable `PAGORADAR_URL`.
 - Si cambias **el dominio de una app**: en el panel, **Apps → la app → URL del webhook**. Sin redesplegar.
-- Si cambias **el dominio de recepción**: Email Routing (subdominio + catch-all hacia el Worker) en el
-  dominio nuevo y **Ajustes → Dominio de recepción** (aplica a las cuentas nuevas). Las cuentas que
+- Si cambias **el dominio de recepción**: agrégalo en **Ajustes → Dominios**, configura su Email Routing
+  (subdominio + catch-all hacia el Worker) y hazlo **predeterminado** (aplica a las cuentas nuevas). Las cuentas que
   ya existen conservan su dirección; para moverlas, crea cuentas nuevas y repite en cada Gmail la
   dirección de reenvío (con su código) y el filtro.
