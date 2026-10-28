@@ -45,7 +45,7 @@ export function queueEvent(store, app, event) {
  * its current secret. Returns how many were attempted. `fetchImpl` is for tests.
  */
 export async function deliverDue(store, { fetchImpl = fetch, now = Date.now(), log = () => {} } = {}) {
-  const due = store.deliveries.due(new Date(now).toISOString());
+  const due = store.deliveries.claimDue(new Date(now).toISOString());
   await Promise.all(
     due.map(async (d) => {
       const app = store.apps.get(d.source);

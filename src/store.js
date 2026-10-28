@@ -556,7 +556,16 @@ export function openStore(path, { masterKey } = {}) {
   const deliveries = {
     queue: (eventId, appId, url, body, at = now()) =>
       run("INSERT OR IGNORE INTO deliveries (event_id, source, url, body, next_attempt_at, created_at) VALUES (?,?,?,?,?,?)", eventId, appId, url, body, at, at),
-    due: (at = now(), limit = 20) => all("SELECT * FROM deliveries WHERE status = 'pending' AND next_attempt_at <= ? ORDER BY next_attempt_at LIMIT ?", at, limit),
+    /**
+     * The deliveries due at `at`, pushed `leaseMs` into the future so a concurrent deliverDue (the 15 s loop and the
+     * one each ingested email starts) doesn't pick them up too. A send that never finishes (crash) is retried after it.
+     */
+    claimDue(at = now(), limit = 20, leaseMs = 120_000) {
+      const due = all("SELECT * FROM deliveries WHERE status = 'pending' AND next_attempt_at <= ? ORDER BY next_attempt_at LIMIT ?", at, limit);
+      const until = new Date(Date.parse(at) + leaseMs).toISOString();
+      for (const d of due) run("UPDATE deliveries SET next_attempt_at = ? WHERE id = ?", until, d.id);
+      return due;
+    },
     markDelivered: (id, httpStatus, at = now()) =>
       run("UPDATE deliveries SET status = 'delivered', attempts = attempts + 1, last_status = ?, last_error = NULL, delivered_at = ? WHERE id = ?", httpStatus, at, id),
     markFailedAttempt: (id, httpStatus, error, nextAt) =>

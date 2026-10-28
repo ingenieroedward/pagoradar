@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { validateSources } from "../src/config.js";
 import { openStore } from "../src/store.js";
 import { createApp } from "../src/app.js";
-import { deliverDue, RETRY_DELAYS_MS, verifySignature } from "../src/webhooks.js";
+import { deliverDue, makeEvent, queueEvent, RETRY_DELAYS_MS, verifySignature } from "../src/webhooks.js";
 import { importLegacySources } from "../src/importLegacy.js";
 import { masterKeyFrom } from "../src/security.js";
 import { deliver } from "../worker/src/index.js";
@@ -161,6 +161,17 @@ test("webhook retries with backoff, then delivered; admin retry", async () => {
   assert.ok(store.deliveries.retry(d.id));
   await deliverDue(store);
   assert.equal(store.deliveries.list({ status: "failed" }).length, 0);
+});
+
+test("concurrent deliverDue sends each webhook once", async () => {
+  received = [];
+  hookStatus = 200;
+  const app = store.apps.get("rifas");
+  queueEvent(store, app, makeEvent("payment.test", app.id, {}));
+  const [a, b] = await Promise.all([deliverDue(store), deliverDue(store)]);
+  assert.equal(a + b, 1);
+  assert.equal(received.length, 1);
+  assert.equal(store.deliveries.list({ status: "delivered" })[0].attempts, 1);
 });
 
 test("test webhook", async () => {
