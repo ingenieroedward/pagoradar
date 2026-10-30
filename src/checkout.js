@@ -69,7 +69,7 @@ function statusBlock(charge, remainingSec) {
 }
 
 /** The account's Bre-B QR, if it has one: with the amount inside when that's switched on, otherwise the bank's image. */
-async function qrSection(charge, qr) {
+async function qrSection(charge, qr, account) {
   if (!qr) return "";
   const dynamic = qr.amountFormat && isEmvQr(qr.payload);
   const src = dynamic ? await QRCode.toDataURL(withAmount(qr.payload, charge.amount, qr.amountFormat), { margin: 1, width: 320 }) : qr.image;
@@ -79,8 +79,11 @@ async function qrSection(charge, qr) {
     <h2>O paga con QR</h2>
     <img src="${src}" alt="Código QR para pagar por Bre-B" width="240" height="240">
     <p class="muted small">${dynamic
-      ? html`Escanéalo con la app de tu banco: debe mostrar <b>${fmtMoney(charge.amount)}</b>. Si no lo acepta, usa la llave de arriba.`
+      ? html`Escanéalo con la app de tu banco: debe mostrar <b>${fmtMoney(charge.amount)}</b>.`
       : html`Escanéalo con la app de tu banco y escribe exactamente <b>${fmtMoney(charge.amount)}</b>.`}</p>
+    ${account?.payKey
+      ? html`<p class="small">Si no puedes escanearlo, envía <b>${fmtMoney(charge.amount)}</b> a esta llave: <span class="copy"><code>${account.payKey}</code><button type="button" class="btn btn-small" data-copy="${account.payKey}">Copiar</button></span></p>`
+      : html`<p class="muted small">Si no puedes escanearlo, sigue los pasos de arriba.</p>`}
     <a class="btn btn-small" href="${src}" download="qr-pago.${ext}">Descargar QR</a>
     <p class="muted small">¿Pagas desde este celular? Descárgalo y súbelo desde la opción de QR de tu banco.</p>
   </section>`;
@@ -172,7 +175,7 @@ export async function handleCheckout(req, res, url, ctx) {
     sendHtml(res, 404, shell("Cobro no encontrado", html`<section class="state state-off"><h2>Cobro no encontrado</h2><p>Revisa el enlace que te enviaron.</p></section>`));
     return true;
   }
-  const qrBlock = charge.status === "pending" ? await qrSection(charge, store.accountQr.get(charge.accountId)) : "";
+  const qrBlock = charge.status === "pending" ? await qrSection(charge, store.accountQr.get(charge.accountId), store.accounts.get(charge.accountId)) : "";
   sendHtml(res, 200, chargePage(charge, store.accounts.get(charge.accountId), qrBlock), { "Referrer-Policy": "no-referrer" });
   return true;
 }

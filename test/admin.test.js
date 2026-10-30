@@ -550,10 +550,12 @@ test("QR: the charge's link, the bank's image on the payment page, and the amoun
   r = await upload(png, { "x-qr-payload": encodeURIComponent("no es un qr") });
   assert.equal(r.status, 200);
   assert.equal(store.accountQr.get(acc.id).payload, null, "text that isn't a payment QR isn't kept");
+  assert.equal(store.accountQr.get(acc.id).amountFormat, null, "nothing to put the amount in");
   let text = await page();
   assert.match(text, /O paga con QR/);
   assert.match(text, /src="data:image\/png;base64,/);
   assert.match(text, /escribe exactamente/);
+  assert.match(text, /Si no puedes escanearlo, envía/);
   assert.match(text, /@cajaqr/, "the key is still there");
   assert.match(text, /download="qr-pago\.png"/);
 
@@ -573,12 +575,29 @@ test("QR: the charge's link, the bank's image on the payment page, and the amoun
   assert.match(r.text, /alt="QR de prueba con el valor sin marca de un solo uso"/);
 
   // On: customers get a QR with the amount; it's not the bank's image.
+  assert.equal((await settings({ payload: staticQr, amountFormat: "keep" })).location, `/accounts/${acc.id}?ok=saved`);
+  assert.equal(store.accountQr.get(acc.id).amountFormat, "keep");
+  assert.match(await page(), /debe mostrar/);
   await settings({ payload: staticQr, amountFormat: "decimal" });
   text = await page();
   assert.match(text, /debe mostrar/);
   assert.doesNotMatch(text, /escribe exactamente/);
   assert.match(text, /@cajaqr/, "the key is still there, in case a bank refuses it");
   assert.equal(store.accountQr.get(acc.id).image.startsWith("data:image/png"), true, "the bank's image is kept");
+
+  // A new image: its readable QR is on by default, and a choice already made stays.
+  store.accountQr.remove(acc.id);
+  await upload(png, { "x-qr-payload": encodeURIComponent(staticQr) });
+  assert.equal(store.accountQr.get(acc.id).amountFormat, "keep");
+  assert.match(await page(), /debe mostrar/);
+  await settings({ payload: staticQr, amountFormat: "" });
+  await upload(png, { "x-qr-payload": encodeURIComponent(staticQr) });
+  assert.equal(store.accountQr.get(acc.id).amountFormat, null, "switched off stays off");
+  // An image that can't be read: never the QR it replaced.
+  await settings({ payload: staticQr, amountFormat: "keep" });
+  await upload(png);
+  assert.equal(store.accountQr.get(acc.id).payload, null);
+  assert.match(await page(), /escribe exactamente/);
 
   // Someone who can only look.
   const { hashPassword } = await import("../src/security.js");
