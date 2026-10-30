@@ -1,7 +1,8 @@
 node_modules
 data
 test
-worker
+worker/*
+!worker/src
 .git
 .env
 *.eml
