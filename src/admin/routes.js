@@ -1401,6 +1401,7 @@ function cancelCharge(s, id) {
 
 const EXPIRY_OPTIONS = [[30, "30 minutos"], [60, "1 hora"], [240, "4 horas"], [1440, "1 día"], [4320, "3 días"], [10080, "7 días"]];
 const DEFAULT_EXPIRY = 1440; // a link sent by hand may take a while to be paid
+const UNIQUE_OPTIONS = [["up", "Sumar unos pesos (recomendado)"], ["down", "Restar unos pesos (un pequeño descuento)"], ["off", "Cobrar el valor exacto"]];
 
 /** Accounts a charge can be created in from the panel: of an app this person manages, both switched on. */
 function chargeableAccounts(s) {
@@ -1430,12 +1431,13 @@ function newChargePage(s, { error = null, values = {} } = {}) {
           : ""}
       <form method="post" action="/charges" class="card">
         ${csrfField(s.session.csrf)}
-        ${section("El cobro", "Se le suma hasta $ 999 al valor: así, cuando llega el aviso del banco, se sabe qué cobro se pagó.", html`
+        ${section("El cobro", "El aviso del banco no dice qué cobro se pagó, solo el valor. Por eso, normalmente, cada cobro abierto de una cuenta tiene un valor distinto.", html`
           <label>Cuenta donde recibes <select name="account" required>${accounts.map((a) => html`<option value="${a.id}"${a.id === selected ? raw(" selected") : ""}>${a.label}</option>`)}</select></label>
           <div class="field-pair">
             <label>Valor en pesos <input type="text" name="amount" inputmode="numeric" required maxlength="20" value="${values.amount ?? ""}" placeholder="25.000" autocomplete="off"></label>
             <label>Vence en <select name="expiresInMinutes">${EXPIRY_OPTIONS.map(([v, l]) => html`<option value="${v}"${v === expiry ? raw(" selected") : ""}>${l}</option>`)}</select></label>
           </div>
+          <label>Valor único <span class="hint">Sumar o restar cambia el valor entre $ 1 y $ 999. Con el valor exacto, si dos cobros abiertos piden lo mismo, el pago solo se asocia automáticamente si indicas quién va a pagar.</span><select name="uniqueAmount">${UNIQUE_OPTIONS.map(([v, l]) => html`<option value="${v}"${v === (values.uniqueAmount ?? "up") ? raw(" selected") : ""}>${l}</option>`)}</select></label>
           <label>Descripción <span class="hint">Opcional. La ve quien paga.</span><input type="text" name="description" maxlength="140" value="${values.description ?? ""}" placeholder="Pedido 123"></label>
           <label>Quién va a pagar <span class="hint">Opcional. Ayuda a reconocer el pago si varios cobros piden el mismo valor.</span><input type="text" name="payerName" maxlength="120" value="${values.payerName ?? ""}" placeholder="Ana Pérez" autocomplete="off"></label>`)}
         <div class="form-actions"><a class="btn btn-ghost" href="/charges">Cancelar</a><button class="btn btn-primary" type="submit"${usable.length === 0 ? raw(" disabled") : ""}>Crear cobro</button></div>
@@ -1450,6 +1452,7 @@ function submitNewCharge(s) {
     account: String(s.form.account ?? ""),
     amount: String(s.form.amount ?? "").trim(),
     expiresInMinutes: String(s.form.expiresInMinutes ?? DEFAULT_EXPIRY),
+    uniqueAmount: String(s.form.uniqueAmount ?? "up"),
     description: String(s.form.description ?? "").trim(),
     payerName: String(s.form.payerName ?? "").trim(),
   };
@@ -1462,6 +1465,7 @@ function submitNewCharge(s) {
     account: account.id,
     amount: cents / 100,
     expiresInMinutes: Number(values.expiresInMinutes),
+    uniqueAmount: values.uniqueAmount,
     description: values.description,
     payerName: values.payerName,
   });
@@ -1479,6 +1483,8 @@ function chargePage(s, id) {
   const payment = c.paymentId ? store.payments.get(c.paymentId) : null;
   const pending = c.status === "pending";
   const link = `${publicBase(s)}/c/${c.id}`;
+  // Same amount on purpose: without an expected payer, a notice for it can't tell them apart.
+  const sameAmount = pending && !c.payerName && store.charges.candidates(c.accountId, c.amountCents, new Date().toISOString(), 0).some((o) => o.id !== c.id && o.status === "pending");
   const message = `Hola. ${c.description ? `Para pagar ${c.description}: ` : "Para pagar: "}${fmtMoney(c.amount)} por Bre-B, aquí están los datos: ${link}`;
   return page(s, {
     title: c.description ?? "Cobro",
@@ -1488,6 +1494,7 @@ function chargePage(s, id) {
       <div class="head"><a class="back" href="/charges">← Cobros</a><div><h1>${c.description ?? "Cobro"} ${chargeStatus(c.status)}</h1>${c.reference ? html`<p class="muted">Ref. ${c.reference}</p>` : ""}</div></div>
       ${msg(s)}
       ${pending && account?.status === "pending" ? flash(html`<a href="/accounts/${account.id}">${account.name}</a> todavía no ha recibido ningún aviso del banco: termina de configurarla o este pago no se reconocerá solo.`, "warn") : ""}
+      ${sameAmount ? flash("Hay otro cobro abierto en esta cuenta por el mismo valor. Si llega ese valor, el pago no se asociará solo: tendrás que hacerlo a mano en Pagos.", "warn") : ""}
       <div class="card pay-hero">
         <span class="tile-ico">${icon("charges")}</span>
         <div class="pay-hero-main"><span class="stat-label">${pending ? "Valor a pagar" : "Valor del cobro"}</span><b>${fmtMoney(c.amount)}</b>${c.amount !== c.baseAmount ? html`<span class="muted">pedido ${fmtMoney(c.baseAmount)}</span>` : ""}</div>

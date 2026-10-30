@@ -319,7 +319,7 @@ cobro**, que muestra los cobros de esa cuenta del valor más parecido al menos) 
 - `charge.paid` trae el cobro y `data.payment`; `data.late: true` si el aviso llegó justo después de
   vencer (el valor de un cobro vencido queda reservado 30 min por eso). `charge.expired` al vencer.
 - En el panel, **Cobros** lista todos con su estado y permite cancelarlos. Con **Nuevo cobro** creas uno sin
-  programar (cuenta con llave Bre-B, valor, vencimiento) y envías el enlace por WhatsApp o lo copias. Si la app
+  programar (cuenta con llave Bre-B, valor, valor único, vencimiento) y envías el enlace por WhatsApp o lo copias. Si la app
   tiene webhook, también recibe `charge.paid` o `charge.expired`.
 
 ### SDK (Node)

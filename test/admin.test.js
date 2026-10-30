@@ -471,6 +471,22 @@ test("new charge from the panel: link to send, and only for those who manage an 
   assert.match((await b.req("/audit")).text, /Creó un cobro/);
   assert.match((await b.req("/charges")).text, new RegExp(`href="/charges/${id}"`));
 
+  // How the amount is made unique: up by default, down, or exact (and then it warns about twins).
+  const made = async (o) => store.charges.get((await b.req("/charges", { method: "POST", form: form({ amount: "40.000", ...o }) })).location.match(/(chg_[a-z0-9]+)/)[1]);
+  assert.match((await b.req("/charges/new")).text, /name="uniqueAmount"/);
+  const down = await made({ uniqueAmount: "down" });
+  assert.equal(down.amount, 39999);
+  const exact = await made({ uniqueAmount: "off" });
+  assert.equal(exact.amount, 40000);
+  assert.doesNotMatch((await b.req(`/charges/${exact.id}`)).text, /por el mismo valor/);
+  const twin = await made({ uniqueAmount: "off" });
+  assert.equal(twin.amount, 40000);
+  assert.match((await b.req(`/charges/${twin.id}`)).text, /por el mismo valor/);
+  const named = await made({ uniqueAmount: "off", payerName: "Ana Pérez" });
+  assert.doesNotMatch((await b.req(`/charges/${named.id}`)).text, /por el mismo valor/, "an expected payer tells them apart");
+  assert.equal((await b.req("/charges", { method: "POST", form: form({ uniqueAmount: "otro" }) })).status, 400);
+  for (const c2 of [down, exact, twin, named]) store.charges.cancel(c2.id);
+
   // A suspended app can't charge (its notices are refused too).
   store.apps.update(app.id, { active: false });
   assert.equal((await b.req("/charges", { method: "POST", form: form() })).status, 400);
