@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { loadConfig } from "./config.js";
 import { openStore } from "./store.js";
 import { createApp } from "./app.js";
-import { deliverDue } from "./webhooks.js";
+import { alertSilentAccounts, deliverDue } from "./webhooks.js";
 import { importLegacySources } from "./importLegacy.js";
 import { expireCharges } from "./charges.js";
 import { randomToken } from "./security.js";
@@ -31,7 +31,7 @@ server.listen(config.port, () => {
   log(`pagoradar escuchando en :${config.port} · ${store.apps.list().length} apps · ${store.accounts.list().length} cuentas receptoras`);
 });
 
-// Expired charges and webhook retries every 15 s; retention once an hour.
+// Expired charges and webhook retries every 15 s; retention and silent accounts once an hour.
 let delivering = false;
 const tick = setInterval(async () => {
   if (delivering) return;
@@ -46,7 +46,10 @@ const tick = setInterval(async () => {
     delivering = false;
   }
 }, 15_000);
-const retention = () => store.cleanup(Number(store.settings.get("retention_days", config.retentionDays)));
+const retention = () => {
+  store.cleanup(Number(store.settings.get("retention_days", config.retentionDays)));
+  alertSilentAccounts(store, { log });
+};
 const cleanup = setInterval(retention, 3600_000);
 retention();
 

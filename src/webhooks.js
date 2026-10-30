@@ -89,3 +89,18 @@ export async function deliverDue(store, { fetchImpl = fetch, now = Date.now(), l
   );
   return due.length;
 }
+
+/** account.silent, once per silence: a new valid notice clears it. The panel shows it too, on Inicio and on the account. */
+export function alertSilentAccounts(store, { log = () => {} } = {}) {
+  const due = store.accounts.silentToAlert();
+  for (const a of due) {
+    const app = store.apps.get(a.appId);
+    if (app?.active) {
+      const data = { account: { id: a.id, name: a.name, tenantRef: a.tenantRef, address: a.address }, lastEmailAt: a.lastEmailAt, silentAfterHours: a.silentAfterHours };
+      queueEvent(store, app, makeEvent("account.silent", app.id, data, `evt_account_silent_${a.id}_${Date.parse(a.lastEmailAt)}`));
+    }
+    store.accounts.markSilentAlerted(a.id);
+    log(`[${a.id}] sin avisos desde ${a.lastEmailAt}`);
+  }
+  return due.length;
+}

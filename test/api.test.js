@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { openStore } from "../src/store.js";
 import { createApp } from "../src/app.js";
 import { masterKeyFrom } from "../src/security.js";
+import { alertSilentAccounts, deliverDue } from "../src/webhooks.js";
 import { deliver } from "../worker/src/index.js";
 import { OWNER, gmailConfirmationEmail, nequiNegociosEmail, resolverFor } from "./fixtures.js";
 
@@ -120,4 +121,46 @@ test("update, disable, delete (disables when it has payments)", async () => {
   assert.equal((await api(keyA, `/v1/accounts/${fresh.id}`)).status, 404);
   const actions = store.audit.list().map((a) => a.action);
   assert.ok(actions.includes("Creó la cuenta receptora") && actions.includes("Eliminó la cuenta receptora"));
+});
+
+test("account.silent: once per silence, only for accounts that were working, and a new notice clears it", async () => {
+  const res = await api(keyA, "/v1/accounts", { method: "POST", body: { name: "Callada", ownerEmails: [OWNER], silentAfterHours: 24 } });
+  assert.equal(res.status, 201);
+  const created = await res.json();
+  assert.equal(created.silentAfterHours, 24);
+  assert.equal(created.silent, false);
+  assert.equal((await api(keyA, `/v1/accounts/${created.id}`, { method: "PATCH", body: { silentAfterHours: -1 } })).status, 400);
+  const a = store.accounts.get(created.id);
+  const longAgo = new Date(Date.now() - 25 * 3600_000).toISOString();
+  const age = () => store.db.prepare("UPDATE accounts SET last_email_at = ? WHERE id = ?").run(longAgo, a.id);
+  const silentEvents = () => received.filter((e) => e.type === "account.silent" && e.data.account.id === a.id);
+
+  assert.equal(store.accounts.get(a.id).silent, false, "still waiting for its first notice: that's another state");
+  assert.equal(alertSilentAccounts(store), 0);
+  store.accounts.markActive(a.id);
+  assert.equal(store.accounts.get(a.id).silent, false, "just heard from it");
+  age();
+  assert.equal(store.accounts.get(a.id).silent, true);
+  assert.equal((await (await api(keyA, `/v1/accounts/${a.id}`)).json()).silent, true);
+
+  assert.equal(alertSilentAccounts(store), 1);
+  assert.equal(alertSilentAccounts(store), 0, "only once");
+  await deliverDue(store);
+  assert.ok(await waitFor(() => silentEvents().length === 1));
+  assert.equal(silentEvents()[0].data.lastEmailAt, longAgo);
+  assert.equal(silentEvents()[0].data.silentAfterHours, 24);
+
+  // A valid notice: working again, and the next silence is told too.
+  store.accounts.markActive(a.id);
+  assert.equal(store.accounts.get(a.id).silent, false);
+  age();
+  assert.equal(alertSilentAccounts(store), 1);
+
+  // "Never", or switched off: no alert.
+  store.accounts.update(a.id, { silentAfterHours: 0 });
+  assert.equal(store.accounts.get(a.id).silent, false);
+  store.accounts.update(a.id, { silentAfterHours: 24 });
+  store.accounts.setDisabled(a.id, true);
+  assert.equal(store.accounts.get(a.id).silent, false);
+  store.accounts.remove(a.id);
 });

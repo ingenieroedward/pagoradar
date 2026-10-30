@@ -210,6 +210,16 @@ CREATE TABLE passkeys (
 CREATE INDEX passkeys_admin ON passkeys (admin_id);
 `;
 
+// v7: warn when an account stops getting notices (0 hours = never), and invitations by link instead of temporary passwords.
+const V7 = `
+ALTER TABLE accounts ADD COLUMN silent_after_hours INTEGER NOT NULL DEFAULT 168;
+ALTER TABLE accounts ADD COLUMN silent_alerted_at TEXT;
+ALTER TABLE admins ADD COLUMN invite_hash TEXT;
+ALTER TABLE admins ADD COLUMN invite_expires_at TEXT;
+`;
+
+const INVITE_DAYS = 7;
+
 export const ROLES = ["admin", "client"];
 export const ACCESS_LEVELS = ["view", "manage"];
 
@@ -233,7 +243,7 @@ export function openStore(path, { masterKey } = {}) {
   db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
   db.exec(V1);
   const version = db.prepare("PRAGMA user_version").get().user_version;
-  for (const [v, sql] of [[2, V2], [3, V3], [4, V4], [5, V5], [6, V6]]) {
+  for (const [v, sql] of [[2, V2], [3, V3], [4, V4], [5, V5], [6, V6], [7, V7]]) {
     if (version >= v) continue;
     db.exec("BEGIN");
     try {
@@ -403,6 +413,12 @@ export function openStore(path, { masterKey } = {}) {
       payKey: r.pay_key,
       payHolder: r.pay_holder,
       createdAt: r.created_at,
+      silentAfterHours: r.silent_after_hours,
+      silentAlertedAt: r.silent_alerted_at,
+      // Working, but no valid notice in too long: a filter broke, the bank changed its email, or nobody paid.
+      silent:
+        !r.disabled_at && r.status === "active" && r.silent_after_hours > 0 && Boolean(r.last_email_at) &&
+        Date.now() - new Date(r.last_email_at).getTime() > r.silent_after_hours * 3600_000,
     };
   const accounts = {
     list: (appId) =>
@@ -438,17 +454,18 @@ export function openStore(path, { masterKey } = {}) {
       );
       return accounts.get(id);
     },
-    update(id, { name, ownerEmails, banks, tenantRef, payKey, payHolder }) {
+    update(id, { name, ownerEmails, banks, tenantRef, payKey, payHolder, silentAfterHours }) {
       const cur = one("SELECT * FROM accounts WHERE id = ?", id);
       if (!cur) return null;
       run(
-        "UPDATE accounts SET name = ?, owner_emails = ?, banks = ?, tenant_ref = ?, pay_key = ?, pay_holder = ? WHERE id = ?",
+        "UPDATE accounts SET name = ?, owner_emails = ?, banks = ?, tenant_ref = ?, pay_key = ?, pay_holder = ?, silent_after_hours = ? WHERE id = ?",
         name ?? cur.name,
         ownerEmails ? JSON.stringify(ownerEmails.map((e) => e.trim().toLowerCase())) : cur.owner_emails,
         banks ? JSON.stringify(banks) : cur.banks,
         tenantRef === undefined ? cur.tenant_ref : tenantRef,
         payKey === undefined ? cur.pay_key : payKey,
         payHolder === undefined ? cur.pay_holder : payHolder,
+        silentAfterHours === undefined ? cur.silent_after_hours : silentAfterHours,
         id,
       );
       return accounts.get(id);
@@ -458,9 +475,12 @@ export function openStore(path, { masterKey } = {}) {
       run("UPDATE accounts SET confirmation_code = ?, confirmation_link = ?, confirmation_at = ? WHERE id = ?", code, link, now(), id),
     /** A genuine bank email arrived: the account works. Returns true the first time. */
     markActive(id) {
-      run("UPDATE accounts SET last_email_at = ? WHERE id = ?", now(), id);
+      run("UPDATE accounts SET last_email_at = ?, silent_alerted_at = NULL WHERE id = ?", now(), id);
       return run("UPDATE accounts SET status = 'active' WHERE id = ? AND status = 'pending'", id).changes === 1;
     },
+    /** Accounts that went silent and nobody has been told yet. */
+    silentToAlert: () => accounts.list().filter((a) => a.silent && !a.silentAlertedAt),
+    markSilentAlerted: (id) => run("UPDATE accounts SET silent_alerted_at = ? WHERE id = ?", now(), id),
     touchPayment: (id) => run("UPDATE accounts SET last_payment_at = ? WHERE id = ?", now(), id),
     remove(id) {
       // Its open charges can't be paid anymore.
@@ -734,6 +754,11 @@ export function openStore(path, { masterKey } = {}) {
       const f = appIds ? inList("source", appIds) : { sql: "1", args: [] };
       return all(`SELECT * FROM inbox WHERE (? IS NULL OR account_id = ?) AND ${f.sql} ORDER BY id DESC LIMIT ?`, accountId ?? null, accountId ?? null, ...f.args, limit);
     },
+    /** Genuine bank notices we couldn't read: most likely the bank changed its email. */
+    countUnrecognizedSince(iso, appIds) {
+      const f = appIds ? inList("source", appIds) : { sql: "1", args: [] };
+      return one(`SELECT COUNT(*) AS n FROM inbox WHERE received_at >= ? AND reason = 'unrecognized' AND ${f.sql}`, iso, ...f.args).n;
+    },
     countSince(iso, appIds) {
       const f = appIds ? inList("source", appIds) : { sql: "1", args: [] };
       return one(`SELECT COUNT(*) AS n FROM inbox WHERE received_at >= ? AND reason != 'gmail_forwarding_confirmation' AND ${f.sql}`, iso, ...f.args).n;
@@ -747,6 +772,8 @@ export function openStore(path, { masterKey } = {}) {
       email: r.email,
       name: r.name,
       role: r.role ?? "admin",
+      invitePending: Boolean(r.invite_hash),
+      inviteExpiresAt: r.invite_expires_at,
       passwordHash: r.password_hash,
       totpEnabled: Boolean(r.totp_secret_enc),
       totpLastStep: r.totp_last_step,
@@ -774,6 +801,16 @@ export function openStore(path, { masterKey } = {}) {
       );
       return admins.get(id);
     },
+    /** A new one-time link for this person to choose their password; replaces any earlier one. Returns its token. */
+    newInvite(id) {
+      const token = randomToken(32);
+      run("UPDATE admins SET invite_hash = ?, invite_expires_at = ? WHERE id = ?", sha256(token), new Date(Date.now() + INVITE_DAYS * 86400_000).toISOString(), id);
+      return token;
+    },
+    /** Whose invitation this is, if it's still good. */
+    byInvite: (token) => toAdmin(one("SELECT * FROM admins WHERE invite_hash = ? AND invite_expires_at > ?", sha256(String(token ?? "")), now())),
+    acceptInvite: (id, name, passwordHash) =>
+      run("UPDATE admins SET name = COALESCE(?, name), password_hash = ?, must_change_password = 0, invite_hash = NULL, invite_expires_at = NULL WHERE id = ?", name, passwordHash, id),
     /** An admin sees everything; a client only the apps in `access` (an admin's own grants are dropped). */
     setRole(id, role) {
       if (!ROLES.includes(role)) return false;

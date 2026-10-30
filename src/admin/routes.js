@@ -173,6 +173,8 @@ export async function handleAdmin(req, res, url, ctx) {
   }
   if (path === "/setup") return redirect(res, "/login");
   if (path === "/login") return login(s, method);
+  const invite = path.match(/^\/invite\/([\w-]+)$/);
+  if (invite) return acceptInvite(s, invite[1], method);
   if (path === "/login/passkey/options" && method === "POST") return passkeyLoginOptions(s);
   if (path === "/login/passkey" && method === "POST") return passkeyLogin(s);
   if (path === "/login/2fa") return loginTotp(s, method);
@@ -231,6 +233,7 @@ export async function handleAdmin(req, res, url, ctx) {
   if (path === "/inbox" && method === "GET") return inboxPage(s);
   if (path === "/settings") return method === "POST" ? saveSettings(s) : settingsPage(s);
   if (path === "/settings/admins" && method === "POST") return createAdmin(s);
+  if ((m = path.match(/^\/settings\/admins\/([\w-]+)\/invite$/)) && method === "POST") return renewInvite(s, m[1]);
   if ((m = path.match(/^\/settings\/admins\/([\w-]+)$/))) return method === "POST" ? savePerson(s, m[1]) : personPage(s, m[1]);
   if (path === "/domains") return method === "POST" ? createDomain(s) : domainsPage(s);
   if ((m = path.match(/^\/domains\/([a-z0-9.-]+)$/))) return method === "POST" ? updateDomain(s, m[1]) : domainPage(s, m[1]);
@@ -267,10 +270,67 @@ async function readPublicForm(s) {
   return ok ? form : null;
 }
 
-/** The site passkeys belong to: the PUBLIC_URL (or, without one, wherever this was opened: local development). */
+/** This pagoradar's address: the PUBLIC_URL (or, without one, wherever this was opened: local development). */
+const publicBase = (s) => s.ctx.config.publicUrl ?? `${s.secure ? "https" : "http"}://${s.req.headers.host}`;
+
+/** The site passkeys belong to. */
 function relyingParty(s) {
-  const url = new URL(s.ctx.config.publicUrl ?? `${s.secure ? "https" : "http"}://${s.req.headers.host}`);
+  const url = new URL(publicBase(s));
   return { id: url.hostname, origin: url.origin };
+}
+
+/** A person's invitation: chooses their password, then sets up their 2-step code like anyone. One use, 7 days. */
+async function acceptInvite(s, token, method) {
+  const { store } = s.ctx;
+  const person = store.admins.byInvite(token);
+  if (!person) {
+    return sendHtml(s.res, 404, layout({ title: "Invitación", body: html`<div class="card"><h1>Este enlace ya no sirve</h1><p class="muted">Se usó o venció. Pídele uno nuevo a quien te invitó.</p><p><a href="/login">Ir a entrar</a></p></div>` }));
+  }
+  const pre = preCsrf(s);
+  let error = null;
+  let name = person.name ?? "";
+  if (method === "POST") {
+    const form = await readPublicForm(s);
+    name = String(form?.name ?? "").trim().slice(0, 80);
+    if (!form) error = "La página venció; vuelve a intentarlo.";
+    else if (!loginLimit(clientIp(s.req))) error = "Demasiados intentos. Espera unos minutos.";
+    else if (String(form.password ?? "").length < MIN_PASSWORD) error = `La contraseña debe tener al menos ${MIN_PASSWORD} caracteres.`;
+    else if (form.password !== form.password2) error = "Las contraseñas no coinciden.";
+    else {
+      store.admins.acceptInvite(person.id, name || null, await hashPassword(form.password));
+      store.audit.add(person.email, "Aceptó la invitación", null, clientIp(s.req));
+      return redirect(s.res, "/login/2fa/setup", { "Set-Cookie": startSession(s, person.id, "totp_setup") });
+    }
+  }
+  return sendHtml(
+    s.res,
+    error ? 400 : 200,
+    layout({
+      title: "Invitación",
+      body: html`<div class="card">
+        <h1>Bienvenido a pagoradar</h1>
+        <p class="muted">Entrarás como <b>${person.email}</b>. Elige tu contraseña; después configurarás el código de 2 pasos.</p>
+        ${flash(error, "bad")}
+        <form method="post" class="stack">
+          <input type="hidden" name="_csrf" value="${pre.value}">
+          <label>Tu nombre <span class="hint">Opcional.</span><input type="text" name="name" maxlength="80" value="${name}" autocomplete="name"></label>
+          <label>Contraseña <span class="hint">Mínimo ${MIN_PASSWORD} caracteres.</span><input type="password" name="password" required minlength="${MIN_PASSWORD}" autocomplete="new-password"></label>
+          <label>Repite la contraseña <input type="password" name="password2" required autocomplete="new-password"></label>
+          <button class="btn btn-primary" type="submit">Continuar</button>
+        </form>
+      </div>`,
+    }),
+    { "Set-Cookie": pre.header },
+  );
+}
+
+function renewInvite(s, id) {
+  const { store } = s.ctx;
+  const person = store.admins.get(id);
+  if (!person) return notFound(s);
+  if (!person.invitePending && !person.mustChangePassword) return personPage(s, id, { error: "Esta persona ya entró: no necesita invitación." });
+  s.audit("Generó un enlace de invitación nuevo", person.email);
+  return personPage(s, id, { inviteToken: store.admins.newInvite(id) });
 }
 
 async function readJsonBody(req) {
@@ -560,19 +620,25 @@ function dashboard(s) {
   const pending = accounts.filter((a) => a.status === "pending");
   const recent = store.payments.search({ appIds, limit: 10 }).rows;
   const appName = Object.fromEntries(visibleApps(s).map((a) => [a.id, a.name]));
-  const noDomain = s.scope.all && store.domains.list().length === 0;
+  const weekAgo = new Date(Date.now() - 7 * 86400_000).toISOString();
+  const silent = accounts.filter((a) => a.silent);
+  const unreadable = store.inbox.countUnrecognizedSince(weekAgo, appIds);
   return page(s, {
     title: "Inicio",
     active: "/",
     body: html`
       <div class="head"><div><h1>Inicio</h1><p class="muted">Pagos que avisaron los bancos y el estado de tus integraciones.</p></div></div>
-      ${noDomain ? flash(html`Falta el dominio de recepción: agrégalo en <a href="/domains">Dominios</a> antes de crear cuentas.`, "warn") : ""}
+      ${firstSteps(s, accounts)}
+      ${silent.length
+        ? flash(html`${silent.length === 1 ? "Una cuenta no recibe" : `${silent.length} cuentas no reciben`} avisos hace rato: ${silent.slice(0, 5).map((a, i) => html`${i ? ", " : ""}<a href="/accounts/${a.id}">${a.name}</a>`)}${silent.length > 5 ? "…" : ""}.`, "warn")
+        : ""}
+      ${unreadable ? flash(html`${unreadable === 1 ? "Llegó 1 aviso real del banco que no pudimos leer" : `Llegaron ${unreadable} avisos reales del banco que no pudimos leer`}: esos pagos no se registraron. <a href="/inbox">Ver cuáles</a>.`, "bad") : ""}
       ${!s.scope.all && s.scope.appIds.length === 0 ? flash("Todavía no tienes apps asignadas. Pídele acceso al administrador de pagoradar.", "warn") : ""}
       ${failed ? flash(html`${failed === 1 ? "Hay 1 entrega de webhook fallida" : `Hay ${failed} entregas de webhook fallidas`}. <a href="/apps">Revisa tus apps</a>.`, "bad") : ""}
       <div class="grid">
         <div class="stat stat-hero"><span class="stat-ico">${icon("today")}</span><span class="stat-label">Hoy</span><b>${fmtMoney(today.cents / 100)}</b><span class="stat-sub">${today.n} ${today.n === 1 ? "pago" : "pagos"}</span></div>
         <div class="stat"><span class="stat-ico">${icon("week")}</span><span class="stat-label">Últimos 7 días</span><b>${fmtMoney(week.cents / 100)}</b><span class="stat-sub">${week.n} ${week.n === 1 ? "pago" : "pagos"}</span></div>
-        <a class="stat" href="/accounts"><span class="stat-ico">${icon("accounts")}</span><span class="stat-label">Cuentas receptoras</span><b>${accounts.length}</b><span class="stat-sub">${pending.length ? `${pending.length} esperando configuración` : "todas listas"}</span></a>
+        <a class="stat" href="/accounts"><span class="stat-ico">${icon("accounts")}</span><span class="stat-label">Cuentas receptoras</span><b>${accounts.length}</b><span class="stat-sub">${pending.length ? `${pending.length} esperando configuración` : accounts.length ? "todas listas" : "ninguna todavía"}</span></a>
         <a class="stat${rejected ? " stat-warn" : ""}" href="/inbox"><span class="stat-ico">${icon("inbox")}</span><span class="stat-label">Correos rechazados</span><b>${rejected}</b><span class="stat-sub">últimos 7 días</span></a>
       </div>
       <div class="card">
@@ -583,6 +649,30 @@ function dashboard(s) {
 }
 
 /** The App and Cuenta columns only when they tell the rows apart. */
+/** The way from an empty pagoradar to the first payment, until it's done. */
+function firstSteps(s, accounts) {
+  const { store } = s.ctx;
+  const steps = [];
+  if (s.scope.all) {
+    steps.push(["Agrega un dominio de recepción", "Donde las cuentas reciben los avisos, y su regla en Cloudflare.", store.domains.list().length > 0, "/domains", "Agregar dominio"]);
+    steps.push(["Crea una app", "El proyecto que recibe los pagos, con su webhook y sus API keys.", store.apps.list().length > 0, "/apps", "Crear app"]);
+  } else if (manageableApps(s).length === 0) {
+    return ""; // only looks: nothing to set up
+  }
+  steps.push(["Conecta una cuenta receptora", "Una cuenta bancaria: el Gmail del dueño reenvía sus avisos.", accounts.length > 0, "/accounts/new", "Nueva cuenta"]);
+  steps.push(["Recibe el primer aviso", "Haz un pago pequeño de prueba y la cuenta queda Activa.", accounts.some((a) => a.status === "active"), accounts[0] ? `/accounts/${accounts[0].id}` : "/accounts", "Ver la guía"]);
+  if (steps.every(([, , done]) => done)) return "";
+  const next = steps.findIndex(([, , done]) => !done);
+  return html`<div class="card first-steps">
+    <h2>Primeros pasos</h2>
+    <ul class="list">${steps.map(([title, desc, done, href, label], i) => html`<li>
+      <span class="list-ico">${done ? badge("Listo", "ok") : html`<b>${i + 1}</b>`}</span>
+      <div class="list-main"><b>${title}</b><span>${desc}</span></div>
+      ${i === next ? html`<a class="btn btn-primary btn-small" href="${href}">${label}</a>` : ""}
+    </li>`)}</ul>
+  </div>`;
+}
+
 function paymentsTable(s, rows, appName, { showAccount = true } = {}) {
   if (rows.length === 0) return html`<p class="empty">Todavía no hay pagos.</p>`;
   const showApp = visibleApps(s).length > 1 && showAccount;
@@ -862,7 +952,7 @@ function accountCards(accounts, appName) {
     <div class="tile-top"><span class="tile-ico">${icon("accounts")}</span><div class="tile-title"><b>${a.name}</b><span>${appName[a.appId] ?? a.appId}${a.tenantRef ? ` · ref. ${a.tenantRef}` : ""}</span></div></div>
     <p class="tile-line">${icon("inbox")}<code>${a.address}</code></p>
     <span class="bank-tags">${a.banks.map((b) => html`<span>${BANK_LABEL[b] ?? b}</span>`)}</span>
-    <div class="tile-foot">${accountStatus(a.status)}<span>${a.lastPaymentAt ? `Último pago ${fmtAgo(a.lastPaymentAt)}` : "Sin pagos aún"}</span></div>
+    <div class="tile-foot">${accountStatus(a.status, a.silent)}<span>${a.lastPaymentAt ? `Último pago ${fmtAgo(a.lastPaymentAt)}` : "Sin pagos aún"}</span></div>
   </a>`)}</div>`;
 }
 
@@ -943,6 +1033,8 @@ function newAccountPage(s, { error = null, values = {} } = {}) {
   });
 }
 
+const SILENT_OPTIONS = [[24, "1 día"], [72, "3 días"], [168, "7 días"], [336, "14 días"], [720, "30 días"], [0, "Nunca"]];
+
 function readAccountForm(s) {
   const values = {
     appId: String(s.form.appId ?? ""),
@@ -953,6 +1045,7 @@ function readAccountForm(s) {
     tenantRef: String(s.form.tenantRef ?? "").trim(),
     payKey: String(s.form.payKey ?? "").trim().slice(0, 80),
     payHolder: String(s.form.payHolder ?? "").trim().slice(0, 80),
+    silentAfterHours: SILENT_OPTIONS.some(([v]) => String(v) === s.form.silentAfterHours) ? Number(s.form.silentAfterHours) : undefined,
   };
   const emails = parseEmails(values.ownerEmails);
   let error = null;
@@ -985,6 +1078,7 @@ function accountPage(s, id, { error = null } = {}) {
   const recent = store.payments.search({ accountId: id, limit: 10 }).rows;
   const rejected = store.inbox.list({ accountId: id, limit: 10 });
   const waiting = a.status === "pending";
+  const okParam = s.url.searchParams.get("ok");
   const gmailSteps = html`<ol class="steps">
     <li>Gmail → ⚙️ <b>Ver toda la configuración</b> → <b>Reenvío y correo POP/IMAP</b> → <b>Agregar una dirección de reenvío</b>: ${copyable(a.address)}</li>
     <li>Gmail manda un código de confirmación a esa dirección; aparece aquí:
@@ -995,7 +1089,7 @@ function accountPage(s, id, { error = null } = {}) {
     </li>
     <li>Crea un filtro: en <b>De</b> pega ${copyable(senders)} → <b>Crear filtro</b> → <b>Reenviarlo a</b> la dirección de arriba.</li>
     <li>${a.status === "active"
-      ? html`${badge("Listo", "ok")} Recibiendo avisos (último: ${fmtDate(a.lastEmailAt)}).`
+      ? html`${badge("Listo", "ok")} Primer aviso recibido. Último: ${fmtDate(a.lastEmailAt)}`
       : html`Haz un pago pequeño de prueba: cuando llegue el primer aviso válido, la cuenta pasa a <b>Activa</b>.`}</li>
   </ol>`;
   return page(s, {
@@ -1004,25 +1098,30 @@ function accountPage(s, id, { error = null } = {}) {
     status: error ? 400 : 200,
     body: html`
       ${waiting ? raw('<span data-autorefresh="15" hidden></span>') : ""}
-      <div class="head"><a class="back" href="/accounts">← Cuentas</a><div><h1>${a.name} ${accountStatus(a.status)}</h1><p class="muted">${app ? html`App <a href="/apps/${app.id}">${app.name}</a>` : a.appId}${a.tenantRef ? ` · ref. ${a.tenantRef}` : ""}</p></div></div>
+      <div class="head"><a class="back" href="/accounts">← Cuentas</a><div><h1>${a.name} ${accountStatus(a.status, a.silent)}</h1><p class="muted">${app ? html`App <a href="/apps/${app.id}">${app.name}</a>` : a.appId}${a.tenantRef ? ` · ref. ${a.tenantRef}` : ""}</p></div>${manage && a.status !== "disabled" ? html`<a class="btn btn-primary" href="/charges/new?account=${id}">${icon("plus")}<span>Nuevo cobro</span></a>` : ""}</div>
       ${msg(s)}${flash(error, "bad")}
+      ${a.silent ? flash(html`Último aviso válido: ${fmtDate(a.lastEmailAt)}. Si esperabas pagos, revisa el filtro de Gmail del dueño y los correos rechazados${manage ? ", y prueba un aviso en Configuración" : ""}.`, "warn") : ""}
       <div class="card">
         <div class="addr">
           <div><span class="stat-label">Dirección de recepción</span><p class="muted small">El Gmail de ${a.ownerEmails.join(", ")} reenvía aquí los avisos del banco.</p></div>
           ${copyable(a.address)}
         </div>
         ${a.status === "active"
-          ? html`<details class="setup"><summary>${badge("Conectada", "ok")} Recibiendo avisos · último ${fmtAgo(a.lastEmailAt)} <span class="muted small">· ver pasos de configuración</span></summary>${gmailSteps}</details>`
+          ? html`<details class="setup"><summary>${a.silent ? html`${badge("Sin avisos", "warn")} Último aviso válido ${fmtAgo(a.lastEmailAt)}` : html`${badge("Conectada", "ok")} Recibiendo avisos · último ${fmtAgo(a.lastEmailAt)}`} <span class="muted small">· ver pasos de configuración</span></summary>${gmailSteps}</details>`
           : html`<h2 class="mt">Configurar el Gmail del dueño</h2>${gmailSteps}`}
       </div>
-      ${manage ? html`<form method="post" action="/accounts/${id}" class="card">
+      ${recent.length || a.status === "active" ? html`<div class="card"><h2>Últimos pagos</h2>${paymentsTable(s, recent, app ? { [app.id]: app.name } : {}, { showAccount: false })}</div>` : ""}
+      ${rejected.length ? html`<div class="card"><h2>Correos rechazados</h2>${inboxTable(rejected)}</div>` : ""}
+      ${manage ? html`<details class="config"${error || (okParam && okParam !== "created") ? raw(" open") : ""}><summary>Configuración de la cuenta</summary>
+      <form method="post" action="/accounts/${id}" class="card">
         ${csrfField(csrf)}
         ${section("La cuenta", "Cómo la reconoces y a quién corresponde en tu app.", html`
           <label>Nombre <input type="text" name="name" value="${a.name}" required maxlength="60"></label>
           <label>Referencia externa <span class="hint">Opcional: a quién corresponde en tu app. Llega en cada aviso como <code>tenantRef</code>.</span><input type="text" name="tenantRef" value="${a.tenantRef ?? ""}" maxlength="120"></label>`)}
         ${section("Avisos del banco", "Solo se aceptan avisos dirigidos a estos correos y firmados por estos bancos.", html`
           <label>Correos donde el banco avisa <span class="hint">Uno por línea.</span><textarea name="ownerEmails" required rows="2">${a.ownerEmails.join("\n")}</textarea></label>
-          <div class="field"><span class="field-label">Bancos</span>${bankChecks(a.banks)}</div>`)}
+          <div class="field"><span class="field-label">Bancos</span>${bankChecks(a.banks)}</div>
+          <label>Alertar si no llegan avisos en <span class="hint">Se ve en Inicio y tu app recibe <code>account.silent</code>. Elige según cuánto vende esta cuenta.</span><select name="silentAfterHours">${SILENT_OPTIONS.map(([v, l]) => html`<option value="${v}"${v === a.silentAfterHours ? raw(" selected") : ""}>${l}</option>`)}</select></label>`)}
         ${section("Página de pago", "Lo que ven tus clientes cuando les envías un cobro.", html`
           <label>Llave Bre-B para cobros <span class="hint">Celular, @llave, correo…</span><input type="text" name="payKey" value="${a.payKey ?? ""}" maxlength="80" placeholder="@mitienda"></label>
           <label>Titular que ven los clientes <input type="text" name="payHolder" value="${a.payHolder ?? ""}" maxlength="80" placeholder="Nombre del titular"></label>`)}
@@ -1047,9 +1146,8 @@ function accountPage(s, id, { error = null } = {}) {
             ${recent.length === 0 ? postButton(`/accounts/${id}/delete`, "Eliminar", csrf, { tone: "danger", confirm: "¿Eliminar esta cuenta receptora?" }) : ""}
           </div>
         </div>
-      </div>` : ""}
-      <div class="card"><h2>Últimos pagos</h2>${paymentsTable(s, recent, app ? { [app.id]: app.name } : {}, { showAccount: false })}</div>
-      <div class="card"><h2>Correos rechazados</h2>${inboxTable(rejected)}</div>`,
+      </div>
+      </details>` : ""}`,
   });
 }
 
@@ -1059,7 +1157,7 @@ function updateAccount(s, id) {
   if (!a || !s.scope.can(a.appId, "manage")) return notFound(s, "Cuenta no encontrada.");
   const { values, emails, error } = readAccountForm(s);
   if (error) return accountPage(s, id, { error });
-  store.accounts.update(id, { name: values.name, ownerEmails: emails, banks: values.banks, tenantRef: values.tenantRef || null, payKey: values.payKey || null, payHolder: values.payHolder || null });
+  store.accounts.update(id, { name: values.name, ownerEmails: emails, banks: values.banks, tenantRef: values.tenantRef || null, payKey: values.payKey || null, payHolder: values.payHolder || null, silentAfterHours: values.silentAfterHours });
   s.audit("Editó la cuenta receptora", id, `${values.name} · ${emails.join(", ")} · ${values.banks.join(", ")}`);
   return redirect(s.res, `/accounts/${id}?ok=saved`);
 }
@@ -1380,8 +1478,7 @@ function chargePage(s, id) {
   const account = store.accounts.get(c.accountId);
   const payment = c.paymentId ? store.payments.get(c.paymentId) : null;
   const pending = c.status === "pending";
-  const base = config.publicUrl ?? `${s.secure ? "https" : "http"}://${s.req.headers.host}`;
-  const link = `${base}/c/${c.id}`;
+  const link = `${publicBase(s)}/c/${c.id}`;
   const message = `Hola. ${c.description ? `Para pagar ${c.description}: ` : "Para pagar: "}${fmtMoney(c.amount)} por Bre-B, aquí están los datos: ${link}`;
   return page(s, {
     title: c.description ?? "Cobro",
@@ -1485,7 +1582,7 @@ function settingsPage(s, { error = null } = {}) {
           <ul class="list">${people.map((a) => html`<li>
             <span class="list-ico">${icon("user")}</span>
             <div class="list-main"><b>${a.name || a.email}</b><span>${a.name ? `${a.email} · ` : ""}${personAccess(store, a, appName)} · último ingreso ${a.lastLoginAt ? fmtAgo(a.lastLoginAt) : "nunca"}</span></div>
-            ${a.totpEnabled ? badge("2 pasos", "ok") : badge("Sin 2 pasos", "warn")}
+            ${a.invitePending ? badge("Invitación pendiente", "warn") : a.totpEnabled ? badge("2 pasos", "ok") : badge("Sin 2 pasos", "warn")}
             ${a.id === s.admin.id
               ? html`<span class="muted small">Tú</span>`
               : html`<a class="btn btn-small" href="/settings/admins/${a.id}">Permisos</a>${postButton(`/settings/admins/${a.id}/delete`, "Quitar", csrf, { tone: "danger", small: true, confirm: `¿Quitar a ${a.email}?` })}`}
@@ -1515,14 +1612,14 @@ async function createAdmin(s) {
   const role = s.form.role === "admin" ? "admin" : "client";
   if (!EMAIL_RE.test(email)) return settingsPage(s, { error: "Escribe un correo válido." });
   if (store.admins.byEmail(email)) return settingsPage(s, { error: "Ese correo ya tiene acceso." });
-  const temp = randomToken(12);
-  const person = store.admins.create({ email, role, passwordHash: await hashPassword(temp), mustChangePassword: true });
+  // A password nobody knows, until they choose theirs with the link.
+  const person = store.admins.create({ email, role, passwordHash: await hashPassword(randomToken(32)) });
   s.audit(role === "admin" ? "Agregó un administrador" : "Agregó un cliente", email);
-  return personPage(s, person.id, { tempPassword: temp });
+  return personPage(s, person.id, { inviteToken: store.admins.newInvite(person.id) });
 }
 
 /** A person's role and, for a client, what they may do with each app. */
-function personPage(s, id, { error = null, tempPassword = null } = {}) {
+function personPage(s, id, { error = null, inviteToken = null } = {}) {
   const { store } = s.ctx;
   const person = store.admins.get(id);
   if (!person) return notFound(s);
@@ -1537,7 +1634,13 @@ function personPage(s, id, { error = null, tempPassword = null } = {}) {
     body: html`
       <div class="head"><a class="back" href="/settings">← Ajustes</a><div><h1>${person.name || person.email}</h1>${person.name ? html`<p class="muted">${person.email}</p>` : ""}</div></div>
       ${msg(s)}${flash(error, "bad")}
-      ${tempPassword ? html`<div class="secret card"><h2>Contraseña temporal</h2><p>Dásela a la persona por un canal seguro; tendrá que cambiarla y configurar su código de 2 pasos al entrar. <b>No se volverá a mostrar.</b></p><p>${copyable(tempPassword)}</p></div>` : ""}
+      ${inviteToken
+        ? html`<div class="secret card"><h2>Enlace de invitación</h2><p>Envíaselo a ${person.email} por un canal seguro: quien lo abra elige la contraseña de esta cuenta. Sirve una sola vez y vence en 7 días. <b>No se volverá a mostrar.</b></p>
+            <p>${copyable(`${publicBase(s)}/invite/${inviteToken}`)}</p>
+            <div class="row mt"><a class="btn btn-primary" href="https://wa.me/?text=${encodeURIComponent(`Te invito a pagoradar. Entra aquí para elegir tu contraseña (sirve una vez y vence en 7 días): ${publicBase(s)}/invite/${inviteToken}`)}" target="_blank" rel="noopener noreferrer">${icon("send")}<span>Enviar por WhatsApp</span></a></div></div>`
+        : person.invitePending || person.mustChangePassword
+          ? html`<div class="card"><h2>Invitación pendiente</h2><p class="muted small">${person.inviteExpiresAt && new Date(person.inviteExpiresAt) > new Date() ? `Todavía no ha entrado. Vencimiento del enlace: ${fmtDate(person.inviteExpiresAt)}` : "Todavía no ha entrado y su enlace venció."} · Un enlace nuevo anula el anterior.</p><div class="row mt">${postButton(`/settings/admins/${id}/invite`, "Generar enlace nuevo", s.session.csrf)}</div></div>`
+          : ""}
       <form method="post" action="/settings/admins/${id}" class="card">
         ${csrfField(s.session.csrf)}
         ${section("Rol", self ? "No puedes cambiar tu propio rol." : "Un administrador ve y cambia todo, también los ajustes y las demás personas.", html`

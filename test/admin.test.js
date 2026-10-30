@@ -135,6 +135,9 @@ let appId, accountId, apiKey;
 
 test("apps: create, CSRF required, webhook secret encrypted, API key shown once and only hashed", async () => {
   const b = await loggedIn();
+  const empty = await b.req("/");
+  assert.match(empty.text, /Primeros pasos/);
+  assert.match(empty.text, /href="\/domains">Agregar dominio/, "the next thing to do");
   await b.req("/apps");
   let r = await b.req("/apps", { method: "POST", form: { _csrf: "nope", name: "Tienda" } });
   assert.equal(r.status, 403, "no CSRF token → refused");
@@ -246,27 +249,95 @@ test("API key revoke, app deactivation, rotating the webhook secret", async () =
   assert.ok(r0.status === 200);
 });
 
-test("other admins: temporary password, must change it and set up 2-step; audit log", async () => {
+test("other admins: invitation by link, then a password and 2-step; audit log", async () => {
   const b = await loggedIn();
   await b.req("/settings");
   let r = await b.req("/settings/admins", { method: "POST", form: { _csrf: b.csrf(), email: "socio@example.com", role: "admin" } });
-  const temp = r.text.match(/data-copy="([\w-]+)"/)[1];
+  const link = new URL(r.text.match(/data-copy="(http[^"]+\/invite\/[^"]+)"/)[1]).pathname;
+  assert.match(r.text, /wa\.me/);
+  assert.match((await b.req("/settings")).text, /Invitación pendiente/);
+  assert.doesNotMatch((await b.req("/settings")).text, new RegExp(link), "the link isn't shown again");
   const s = browser();
-  await s.req("/login");
-  r = await s.req("/login", { method: "POST", form: { _csrf: s.csrf(), email: "socio@example.com", password: temp } });
-  assert.equal(r.location, "/login/2fa/setup", "new admin must set up 2-step first");
+  r = await s.req(link);
+  assert.match(r.text, /socio@example\.com/);
+  r = await s.req(link, { method: "POST", form: { _csrf: "otro", password: "nueva-clave-larga", password2: "nueva-clave-larga" } });
+  assert.match(r.text, /venció/, "CSRF");
+  r = await s.req(link, { method: "POST", form: { _csrf: s.csrf(), password: "corta", password2: "corta" } });
+  assert.equal(r.status, 400);
+  r = await s.req(link, { method: "POST", form: { _csrf: s.csrf(), name: "Socia", password: "nueva-clave-larga", password2: "nueva-clave-larga" } });
+  assert.equal(r.location, "/login/2fa/setup", "then the 2-step code, like anyone");
+  assert.equal((await browser().req(link)).status, 404, "one use");
+  assert.equal(store.admins.byEmail("socio@example.com").name, "Socia");
   r = await s.req("/login/2fa/setup");
   const secret = r.text.match(/data-copy="([A-Z2-7]{32})"/)[1];
   r = await s.req("/login/2fa/setup", { method: "POST", form: { _csrf: s.csrf(), code: code(secret) } });
-  assert.equal((await s.req("/apps")).location, "/me?first=1", "then change the temporary password");
-  await s.req("/me");
-  r = await s.req("/me/password", { method: "POST", form: { _csrf: s.csrf(), current: temp, password: "nueva-clave-larga", password2: "nueva-clave-larga" } });
-  assert.equal(r.location, "/me?ok=password");
   assert.equal((await s.req("/apps")).status, 200);
   r = await b.req("/audit");
   for (const action of ["Creó la app", "Creó una API key", "Creó la cuenta receptora", "Revocó una API key", "Cambió el secreto del webhook", "Agregó un administrador"]) {
     assert.match(r.text, new RegExp(action));
   }
+});
+
+test("Inicio warns about silent accounts and notices it couldn't read; first steps go away once done", async () => {
+  const b = await loggedIn();
+  const app = store.apps.create({ name: "Alertas" });
+  const acc = store.accounts.create({ appId: app.id, name: "Cuenta Callada", ownerEmails: [OWNER], banks: ["nequi"], domain: "pagos.example.com" });
+  store.accounts.markActive(acc.id);
+  assert.equal(store.accounts.get(acc.id).silent, false);
+  let r = await b.req("/");
+  assert.doesNotMatch(r.text, /Primeros pasos/);
+  assert.doesNotMatch(r.text, /Cuenta Callada<\/a>\./);
+  store.db.prepare("UPDATE accounts SET last_email_at = ? WHERE id = ?").run(new Date(Date.now() - 8 * 86400_000).toISOString(), acc.id);
+  r = await b.req("/");
+  assert.match(r.text, /Una cuenta no recibe avisos/);
+  assert.match(r.text, /Cuenta Callada<\/a>/);
+  r = await b.req(`/accounts/${acc.id}`);
+  assert.match(r.text, /Sin avisos/);
+  assert.match(r.text, /Último aviso válido/);
+  assert.doesNotMatch(r.text, /Recibiendo avisos/, "not both at once");
+  // Choosing "never" in the account's settings silences it.
+  r = await b.req(`/accounts/${acc.id}`, { method: "POST", form: { _csrf: b.csrf(), name: "Cuenta Callada", ownerEmails: OWNER, banks: "nequi", silentAfterHours: "0" } });
+  assert.equal(store.accounts.get(acc.id).silent, false);
+  assert.doesNotMatch((await b.req("/")).text, /Una cuenta no recibe avisos/);
+  assert.match((await b.req(`/accounts/${acc.id}?ok=saved`)).text, /<details class="config" open>/, "stays open after saving");
+  store.accounts.remove(acc.id);
+
+  store.inbox.add({ appId: app.id, reason: "unrecognized", from: "notificaciones@nequi.com.co", subject: "Formato nuevo" });
+  r = await b.req("/");
+  assert.match(r.text, /Llegó 1 aviso real del banco que no pudimos leer/);
+  store.db.prepare("DELETE FROM inbox WHERE subject = 'Formato nuevo'").run();
+});
+
+test("invitations: expire, and a new link cancels the old one", async () => {
+  const b = await loggedIn();
+  await b.req("/settings");
+  let r = await b.req("/settings/admins", { method: "POST", form: { _csrf: b.csrf(), email: "invitada@example.com", role: "client" } });
+  const first = new URL(r.text.match(/data-copy="(http[^"]+\/invite\/[^"]+)"/)[1]).pathname;
+  const person = store.admins.byEmail("invitada@example.com");
+  assert.equal(person.invitePending, true);
+  const row = store.db.prepare("SELECT invite_hash FROM admins WHERE id = ?").get(person.id);
+  assert.ok(!first.includes(row.invite_hash), "only its hash is stored");
+  const anon = browser();
+  await anon.req("/login");
+  r = await anon.req("/login", { method: "POST", form: { _csrf: anon.csrf(), email: "invitada@example.com", password: "lo-que-sea-1234" } });
+  assert.match(r.text, /incorrectos/, "no way in before accepting");
+  r = await b.req(`/settings/admins/${person.id}`);
+  assert.match(r.text, /Invitación pendiente/);
+  r = await b.req(`/settings/admins/${person.id}/invite`, { method: "POST", form: { _csrf: b.csrf() } });
+  const second = new URL(r.text.match(/data-copy="(http[^"]+\/invite\/[^"]+)"/)[1]).pathname;
+  assert.notEqual(first, second);
+  assert.equal((await browser().req(first)).status, 404, "the old one no longer works");
+  assert.equal((await browser().req(second)).status, 200);
+  store.db.prepare("UPDATE admins SET invite_expires_at = ? WHERE id = ?").run(new Date(Date.now() - 1000).toISOString(), person.id);
+  assert.equal((await browser().req(second)).status, 404, "expired");
+  assert.equal((await browser().req("/invite/inventado")).status, 404);
+  store.admins.remove(person.id);
+
+  // Someone who already got in doesn't need one.
+  const socio = store.admins.byEmail("socio@example.com");
+  r = await b.req(`/settings/admins/${socio.id}/invite`, { method: "POST", form: { _csrf: b.csrf() } });
+  assert.equal(r.status, 400);
+  assert.equal(store.admins.get(socio.id).invitePending, false);
 });
 
 test("charges: pay key on the account, list, cancel", async () => {
@@ -440,22 +511,20 @@ test("clients: only their apps, with view or manage access", async () => {
 
   await b.req("/settings");
   let r = await b.req("/settings/admins", { method: "POST", form: { _csrf: b.csrf(), email: "cliente@example.com", role: "client" } });
-  const temp = r.text.match(/data-copy="([\w-]+)"/)[1];
+  const link = new URL(r.text.match(/data-copy="(http[^"]+\/invite\/[^"]+)"/)[1]).pathname;
   const person = store.admins.byEmail("cliente@example.com");
   assert.equal(person.role, "client");
   r = await b.req(`/settings/admins/${person.id}`, { method: "POST", form: { _csrf: b.csrf(), role: "client", [`access_${appId}`]: "manage", [`access_${other.id}`]: "" } });
   assert.equal(r.location, `/settings/admins/${person.id}?ok=saved`);
   assert.deepEqual(store.access.forAdmin(person.id), { [appId]: "manage" });
 
-  // The client signs in like anyone: temporary password, 2-step setup, new password.
+  // The client signs in like anyone: the link, a password, the 2-step setup.
   const c = browser();
-  await c.req("/login");
-  await c.req("/login", { method: "POST", form: { _csrf: c.csrf(), email: "cliente@example.com", password: temp } });
+  await c.req(link);
+  await c.req(link, { method: "POST", form: { _csrf: c.csrf(), password: "clave-del-cliente", password2: "clave-del-cliente" } });
   r = await c.req("/login/2fa/setup");
   const secret = r.text.match(/data-copy="([A-Z2-7]{32})"/)[1];
   await c.req("/login/2fa/setup", { method: "POST", form: { _csrf: c.csrf(), code: code(secret) } });
-  await c.req("/me");
-  await c.req("/me/password", { method: "POST", form: { _csrf: c.csrf(), current: temp, password: "clave-del-cliente", password2: "clave-del-cliente" } });
 
   r = await c.req("/");
   assert.equal(r.status, 200);

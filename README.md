@@ -127,7 +127,7 @@ sirve dos veces), **passkeys** opcionales, bloqueo tras intentos fallidos, sesio
 `SameSite=Strict` (+ `Secure` con HTTPS), token CSRF en cada formulario, se rechazan envíos desde otros
 sitios, cabeceras CSP / `X-Frame-Options`, y un **registro de cambios** de quién hizo qué. Los
 secretos de webhook y de 2 pasos se guardan **cifrados** con `MASTER_KEY`; las API keys, solo su huella.
-Otro administrador recibe una contraseña temporal y al entrar debe cambiarla y configurar sus 2 pasos.
+Otra persona entra con un enlace de invitación de un solo uso: elige su contraseña y configura sus 2 pasos.
 
 
 **Passkeys:** en **Mi cuenta → Passkeys**, con tu código de 2 pasos actual, agregas una passkey (Face ID, huella,
@@ -136,11 +136,12 @@ dispositivo verifica que eres tú, y como la passkey está atada a este sitio, n
 contraseña y el código siguen funcionando, por si pierdes el dispositivo. Si alguien pierde uno, un
 administrador le quita sus passkeys desde **Permisos**.
 
-**Acceso para clientes:** en **Ajustes → Personas con acceso** agrega a alguien como **Cliente** y, en
+**Acceso para clientes:** en **Ajustes → Personas con acceso** agrega a alguien como **Cliente**: sale un
+**enlace de invitación** para enviarle (sirve una vez, vence en 7 días y se puede generar otro). Luego, en
 **Permisos**, elige para cada app **Ver** (pagos, cobros, cuentas, CSV) o **Gestionar** (además crear y
 editar cuentas, URL del webhook, secreto, API keys, crear y cancelar cobros y asociar pagos). Un cliente solo ve sus
 apps; no ve Ajustes, dominios, otras personas ni el registro de cambios, y no puede crear apps ni apagar la
-suya (eso lo haces tú). Entra con contraseña temporal y código de 2 pasos, como un administrador.
+suya (eso lo haces tú). Elige su contraseña con el enlace y configura su código de 2 pasos, como un administrador.
 
 **App instalable (PWA):** en el celular, abre el panel y elige "Agregar a la pantalla de inicio" (Android:
 ⋮ → Instalar app; iPhone: Compartir → Agregar a inicio). Abre a pantalla completa con su ícono y accesos
@@ -192,6 +193,11 @@ página de la cuenta trae la guía con todo para copiar:
    la dirección.
 4. Un pago pequeño de prueba: con el primer aviso válido la cuenta pasa a **Activa**.
 
+**Si una cuenta deja de recibir avisos:** cada cuenta tiene un plazo (7 días por defecto; 1 a 30 días o nunca,
+en **Configuración de la cuenta**). Pasado ese plazo sin un aviso válido aparece **Sin avisos** en la cuenta y en
+**Inicio**, y tu app recibe `account.silent`, una vez por silencio. Inicio también avisa si llegó un aviso real
+del banco que no se pudo leer, porque ese pago no quedó registrado. No se envían correos.
+
 ¿Un aviso que no se entiende o se rechaza? Súbelo en **Probar un aviso (.eml)** de la cuenta (en
 Gmail, ⋮ → *Descargar mensaje*) o mira el motivo en **Correos**. Motivos: `dkim_failed` (sin firma
 válida), `weak_signature`, `not_a_bank`, `not_owner` (aviso de otra cuenta), `unrecognized` (formato
@@ -242,6 +248,7 @@ nuevo), `not_approved`, `unknown_address`, `account_disabled`, `ambiguous_header
   - `account.confirmation_code`: llegó el código de Gmail de una cuenta (`data.code`, `data.link`),
     para mostrárselo a tu cliente;
   - `account.activated`: llegó el primer aviso válido de una cuenta;
+  - `account.silent`: una cuenta activa lleva demasiado sin avisos válidos (`data.lastEmailAt`, `data.silentAfterHours`);
   - `charge.paid` / `charge.expired`: un cobro se pagó o venció (ver "Cobros"). En `payment.received`,
     `data.charge` (`{ id, reference }` o `null`) dice si ese pago saldó un cobro.
 - `method`: `breb_qr`, `breb`, `transfer` u `other`. `accountHint`: la cuenta que recibió (`*0000`)
@@ -348,7 +355,7 @@ pagoradar. Todas con `Authorization: Bearer <API key de la app>`:
 | `POST /v1/accounts` | `{ "name": "Tienda de Ana", "ownerEmails": ["ana@gmail.com"], "banks": ["nequi_negocios"], "tenantRef": "org_42" }` (opcional `"domain"`) → `201` con la cuenta |
 | `GET /v1/accounts?tenantRef=org_42` | Las cuentas de la app (o de un cliente) |
 | `GET /v1/accounts/<id>` | Una cuenta: `status` (`pending` → `active`, o `disabled`), `confirmationCode` / `confirmationLink` de Gmail, `lastPaymentAt`… |
-| `PATCH /v1/accounts/<id>` | Cambiar `name`, `ownerEmails`, `banks`, `tenantRef`, `payKey`, `payHolder` o `active` |
+| `PATCH /v1/accounts/<id>` | Cambiar `name`, `ownerEmails`, `banks`, `tenantRef`, `payKey`, `payHolder`, `silentAfterHours` o `active` |
 | `DELETE /v1/accounts/<id>` | La elimina; si ya tiene pagos, solo la desactiva |
 
 La cuenta trae `address` y `setup` (`forwardTo` y `gmailFilterFrom`, el texto para el filtro de

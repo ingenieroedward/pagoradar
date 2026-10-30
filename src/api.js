@@ -26,6 +26,8 @@ export function accountDTO(a) {
     lastPaymentAt: a.lastPaymentAt,
     payKey: a.payKey,
     payHolder: a.payHolder,
+    silent: a.silent,
+    silentAfterHours: a.silentAfterHours,
     createdAt: a.createdAt,
     setup: { forwardTo: a.address, gmailFilterFrom: gmailFilterFor(a.banks) },
   };
@@ -82,6 +84,10 @@ function accountFields(input, { partial = false } = {}) {
     if (input[field] !== null && (typeof input[field] !== "string" || input[field].trim().length > max)) return { error: `${field}: ${label}, texto de hasta ${max} caracteres o null` };
     out[field] = input[field]?.trim() || null;
   }
+  if (input.silentAfterHours !== undefined) {
+    if (!Number.isInteger(input.silentAfterHours) || input.silentAfterHours < 0 || input.silentAfterHours > 8760) return { error: "silentAfterHours: horas sin avisos antes de alertar, de 0 (nunca) a 8760" };
+    out.silentAfterHours = input.silentAfterHours;
+  }
   if (input.tenantRef !== undefined) {
     if (input.tenantRef !== null && (typeof input.tenantRef !== "string" || input.tenantRef.length > 120)) return { error: "tenantRef: texto de hasta 120 caracteres o null" };
     out.tenantRef = input.tenantRef ? input.tenantRef.trim() : null;
@@ -97,7 +103,7 @@ function accountFields(input, { partial = false } = {}) {
  *   POST   /v1/accounts                                     create a receiving account (for one of your customers; optional domain)
  *   GET    /v1/accounts?tenantRef=                          the app's receiving accounts
  *   GET    /v1/accounts/:id                                 one account (status, Gmail confirmation code…)
- *   PATCH  /v1/accounts/:id                                 change name / ownerEmails / banks / tenantRef / active
+ *   PATCH  /v1/accounts/:id                                 change name / ownerEmails / banks / tenantRef / silentAfterHours / active
  *   DELETE /v1/accounts/:id                                 delete it (or disable it, when it already has payments)
  *   POST   /v1/charges                                      ask a customer for an amount (unique amount + checkout page)
  *   GET    /v1/charges?status=&reference=&account=&tenantRef=
@@ -158,8 +164,8 @@ export async function handleApi(req, res, url, ctx) {
     const { domain, error } = chooseDomain(store, app.id, body.value.domain);
     if (error) return done(400, { error });
     const created = store.accounts.create({ appId: app.id, domain, tenantRef: null, ...fields.value });
-    const { payKey, payHolder } = fields.value;
-    const a = payKey || payHolder ? store.accounts.update(created.id, { payKey, payHolder }) : created;
+    const { payKey, payHolder, silentAfterHours } = fields.value;
+    const a = payKey || payHolder || silentAfterHours !== undefined ? store.accounts.update(created.id, { payKey, payHolder, silentAfterHours }) : created;
     audit("Creó la cuenta receptora", a.id, `${a.name} · ${a.address}${a.tenantRef ? ` · cliente ${a.tenantRef}` : ""}`);
     return done(201, accountDTO(a));
   }

@@ -173,6 +173,11 @@ a.stat:hover { text-decoration: none; border-color: var(--line-2); background: v
 .addr { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding: 14px; border-radius: 12px; background: var(--accent-soft); border: 1px dashed color-mix(in srgb, var(--accent) 50%, transparent); }
 .addr p { margin: 2px 0 0; }
 .addr .copy code { font-size: 13.5px; background: var(--panel); }
+details.config { margin-top: 4px; }
+details.config > summary { padding: 12px 2px; font-size: 16px; }
+details.config[open] > summary { margin-bottom: 8px; }
+.first-steps .list-ico b { color: var(--accent); }
+.first-steps .list-ico .badge { font-size: 11px; padding-inline: 6px; }
 details.setup { margin-top: 14px; }
 details.setup > summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--text); font-weight: 600; font-size: 14px; list-style: none; }
 details.setup > summary::-webkit-details-marker { display: none; }
