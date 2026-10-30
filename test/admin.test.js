@@ -366,6 +366,71 @@ test("domains: in your Cloudflare or a customer's, one Worker per account, who m
   assert.match((await b.req("/settings")).text, /pagos\.example\.com/);
 });
 
+test("new charge from the panel: link to send, and only for those who manage an app with a working account", async () => {
+  const b = await loggedIn();
+  const app = store.apps.create({ name: "Cobros a mano" });
+  const off = store.accounts.create({ appId: app.id, name: "Sin llave", ownerEmails: [OWNER], banks: ["nequi"], domain: "pagos.example.com" });
+  const acc = store.accounts.create({ appId: app.id, name: "Con llave", ownerEmails: [OWNER], banks: ["nequi"], domain: "pagos.example.com" });
+  store.accounts.update(acc.id, { payKey: "@conllave", payHolder: "Ana Pérez" });
+  let r = await b.req("/charges");
+  assert.match(r.text, /href="\/charges\/new"/);
+  r = await b.req(`/charges/new?account=${acc.id}`);
+  assert.match(r.text, /Sin llave \(sin llave Bre-B\)|Sin llave · Cobros a mano \(sin llave Bre-B\)/, "says which accounts lack a key");
+  const form = (o) => ({ _csrf: b.csrf(), account: acc.id, amount: "25.000", expiresInMinutes: "60", description: "Pedido <9>", payerName: "", ...o });
+  r = await b.req("/charges", { method: "POST", form: form({ account: off.id }) });
+  assert.equal(r.status, 400);
+  assert.match(r.text, /no tiene llave Bre-B/);
+  for (const amount of ["", "gratis", "25.000,50", "0", "100.000.001"]) {
+    assert.equal((await b.req("/charges", { method: "POST", form: form({ amount }) })).status, 400, `amount "${amount}"`);
+  }
+  assert.equal((await b.req("/charges", { method: "POST", form: form({ expiresInMinutes: "1" }) })).status, 400);
+
+  r = await b.req("/charges", { method: "POST", form: form() });
+  const id = r.location.match(/^\/charges\/(chg_[a-z0-9]+)\?ok=charged$/)[1];
+  const c = store.charges.get(id);
+  assert.equal(c.baseAmount, 25000);
+  assert.equal(c.amount, 25001, "a unique amount, like any charge");
+  assert.equal(c.accountId, acc.id);
+  assert.ok(new Date(c.expiresAt) - Date.now() > 50 * 60_000);
+  r = await b.req(`/charges/${id}?ok=charged`);
+  assert.match(r.text, /Pedido &lt;9&gt;/, "escaped");
+  assert.match(r.text, new RegExp(`data-copy="http://[^"]+/c/${id}"`), "the link to copy");
+  assert.match(r.text, /https:\/\/wa\.me\/\?text=/);
+  assert.match(r.text, /todavía no ha recibido ningún aviso/, "warns while the account isn't working yet");
+  assert.match((await b.req("/audit")).text, /Creó un cobro/);
+  assert.match((await b.req("/charges")).text, new RegExp(`href="/charges/${id}"`));
+
+  // A suspended app can't charge (its notices are refused too).
+  store.apps.update(app.id, { active: false });
+  assert.equal((await b.req("/charges", { method: "POST", form: form() })).status, 400);
+  store.apps.update(app.id, { active: true });
+
+  // Clients: view sees it but can't create; nobody else sees it.
+  const { hashPassword } = await import("../src/security.js");
+  const viewer = store.admins.create({ email: "ve-cobros@example.com", passwordHash: await hashPassword("clave-larga-123"), role: "client" });
+  store.admins.setTotp(viewer.id, "JBSWY3DPEHPK3PXP", 1);
+  const token = store.sessions.create(viewer.id, "full", "127.0.0.1");
+  const v = browser();
+  v.jar.set("pr_s", token);
+  assert.equal((await v.req(`/charges/${id}`)).status, 404, "no access yet");
+  store.access.set(viewer.id, app.id, "view");
+  r = await v.req(`/charges/${id}`);
+  assert.equal(r.status, 200);
+  assert.doesNotMatch(r.text, /\/cancel"/, "view can't cancel");
+  assert.doesNotMatch((await v.req("/charges")).text, /href="\/charges\/new"/);
+  assert.equal((await v.req("/charges/new")).status, 404);
+  assert.equal((await v.req("/charges", { method: "POST", form: { _csrf: v.csrf(), account: acc.id, amount: "1000" } })).status, 404);
+  store.access.set(viewer.id, app.id, "manage");
+  const other = store.apps.create({ name: "De otro" });
+  const otherAcc = store.accounts.create({ appId: other.id, name: "Ajena", ownerEmails: [OWNER], banks: ["nequi"], domain: "pagos.example.com" });
+  store.accounts.update(otherAcc.id, { payKey: "@ajena" });
+  r = await v.req("/charges/new");
+  assert.doesNotMatch(r.text, /Ajena/);
+  assert.equal((await v.req("/charges", { method: "POST", form: { _csrf: v.csrf(), account: otherAcc.id, amount: "1000" } })).status, 400, "not someone else's account");
+  store.admins.remove(viewer.id);
+  store.charges.cancel(id);
+});
+
 test("clients: only their apps, with view or manage access", async () => {
   const b = await loggedIn();
   // Another app, with an account and a payment the client must never see.

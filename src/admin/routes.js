@@ -7,7 +7,8 @@ import { hashPassword, newTotpSecret, randomToken, safeEqual, totpUri, verifyPas
 import { chooseDomain, sendTestEvent } from "../api.js";
 import { ACCESS_LEVELS } from "../store.js";
 import { deliverDue } from "../webhooks.js";
-import { expireCharges, payManually } from "../charges.js";
+import { parseAmountCents } from "../amount.js";
+import { createCharge, expireCharges, payManually } from "../charges.js";
 import {
   BANK_LABEL,
   REASON_LABEL,
@@ -67,6 +68,7 @@ const MESSAGES = {
   password: "Contraseña cambiada.",
   "totp-reset": "Configura de nuevo tu app autenticadora.",
   canceled: "Cobro cancelado.",
+  charged: "Cobro creado: envíale el enlace a quien va a pagar.",
   linked: "Pago asociado al cobro: se avisó a la app.",
   default: "Ahora es el dominio predeterminado.",
 };
@@ -214,7 +216,9 @@ export async function handleAdmin(req, res, url, ctx) {
   if (path === "/payments" && method === "GET") return paymentsPage(s);
   if (path === "/payments.csv" && method === "GET") return paymentsCsv(s);
   if ((m = path.match(/^\/payments\/(pay_[\w]+)\/link$/))) return method === "POST" ? linkPayment(s, m[1]) : linkPaymentPage(s, m[1]);
-  if (path === "/charges" && method === "GET") return chargesPage(s);
+  if (path === "/charges") return method === "POST" ? submitNewCharge(s) : chargesPage(s);
+  if (path === "/charges/new" && method === "GET") return newChargePage(s);
+  if ((m = path.match(/^\/charges\/(chg_[a-z0-9]+)$/)) && method === "GET") return chargePage(s, m[1]);
   if ((m = path.match(/^\/charges\/(chg_[a-z0-9]+)\/cancel$/)) && method === "POST") return cancelCharge(s, m[1]);
   if (path === "/inbox" && method === "GET") return inboxPage(s);
   if (path === "/settings") return method === "POST" ? saveSettings(s) : settingsPage(s);
@@ -1141,7 +1145,7 @@ function chargesPage(s) {
     title: "Cobros",
     active: "/charges",
     body: html`
-      <div class="head"><div><h1>Cobros</h1><p class="muted">Cada cobro tiene un valor único y su propia página de pago. Las apps los crean por API.</p></div></div>
+      <div class="head"><div><h1>Cobros</h1><p class="muted">Cada cobro tiene un valor único y su propia página de pago. Créalos aquí o desde tu app, por API.</p></div>${manageableApps(s).length ? html`<a class="btn btn-primary" href="/charges/new">${icon("plus")}<span>Nuevo cobro</span></a>` : ""}</div>
       ${msg(s)}
       ${filterBar(s, {
         rows: [
@@ -1163,7 +1167,7 @@ function chargesPage(s) {
             const payment = c.paymentId ? store.payments.get(c.paymentId) : null;
             return html`<tr>
               <td class="t-date">${fmtDate(c.createdAt)}<div class="muted small">vence ${fmtDate(c.expiresAt)}</div></td>
-              <td class="t-main"><b>${c.description ?? "—"}</b>${c.reference ? html`<div class="muted small">Ref. ${c.reference}</div>` : ""}${apps.length > 1 ? html`<div class="muted small">${appName[c.appId] ?? c.appId}</div>` : ""}</td>
+              <td class="t-main"><b><a class="quiet" href="/charges/${c.id}">${c.description ?? "Cobro sin descripción"}</a></b>${c.reference ? html`<div class="muted small">Ref. ${c.reference}</div>` : ""}${apps.length > 1 ? html`<div class="muted small">${appName[c.appId] ?? c.appId}</div>` : ""}</td>
               <td><a class="quiet" href="/accounts/${c.accountId}">${accountName[c.accountId] ?? c.accountId}</a></td>
               <td>${chargeStatus(c.status)}${payment ? html`<div class="muted small">${payment.payerName} · ${fmtDate(payment.paidAt)}</div>` : ""}</td>
               <td class="num"><b>${fmtMoney(c.amount)}</b>${c.amount !== c.baseAmount ? html`<div class="muted small">pedido ${fmtMoney(c.baseAmount)}</div>` : ""}</td>
@@ -1184,6 +1188,119 @@ function cancelCharge(s, id) {
   if (!c || !s.scope.can(c.appId, "manage")) return notFound(s, "Cobro no encontrado.");
   if (store.charges.cancel(id)) s.audit("Canceló un cobro", id);
   return redirect(s.res, "/charges?ok=canceled");
+}
+
+const EXPIRY_OPTIONS = [[30, "30 minutos"], [60, "1 hora"], [240, "4 horas"], [1440, "1 día"], [4320, "3 días"], [10080, "7 días"]];
+const DEFAULT_EXPIRY = 1440; // a link sent by hand may take a while to be paid
+
+/** Accounts a charge can be created in from the panel: of an app this person manages, both switched on. */
+function chargeableAccounts(s) {
+  const apps = manageableApps(s).filter((a) => a.active);
+  const appName = Object.fromEntries(apps.map((a) => [a.id, a.name]));
+  const accounts = s.ctx.store.accounts.list().filter((a) => appName[a.appId] && a.status !== "disabled");
+  return accounts.map((a) => ({ ...a, label: `${a.name}${apps.length > 1 ? ` · ${appName[a.appId]}` : ""}${a.payKey ? "" : " (sin llave Bre-B)"}` }));
+}
+
+function newChargePage(s, { error = null, values = {} } = {}) {
+  if (manageableApps(s).length === 0) return notFound(s);
+  const accounts = chargeableAccounts(s);
+  const usable = accounts.filter((a) => a.payKey);
+  const selected = values.account ?? s.url.searchParams.get("account") ?? usable[0]?.id;
+  const expiry = Number(values.expiresInMinutes ?? DEFAULT_EXPIRY);
+  return page(s, {
+    title: "Nuevo cobro",
+    active: "/charges",
+    status: error ? 400 : 200,
+    body: html`
+      <div class="head"><a class="back" href="/charges">← Cobros</a><div><h1>Nuevo cobro</h1><p class="muted">Crea un enlace de pago y envíaselo a quien te va a pagar por Bre-B.</p></div></div>
+      ${flash(error, "bad")}
+      ${accounts.length === 0
+        ? flash(html`Primero crea una <a href="/accounts/new">cuenta receptora</a>.`, "warn")
+        : usable.length === 0
+          ? flash("Ninguna cuenta tiene llave Bre-B: agrégala en la cuenta, en Página de pago.", "warn")
+          : ""}
+      <form method="post" action="/charges" class="card">
+        ${csrfField(s.session.csrf)}
+        ${section("El cobro", "Se le suma hasta $ 999 al valor: así, cuando llega el aviso del banco, se sabe qué cobro se pagó.", html`
+          <label>Cuenta donde recibes <select name="account" required>${accounts.map((a) => html`<option value="${a.id}"${a.id === selected ? raw(" selected") : ""}>${a.label}</option>`)}</select></label>
+          <div class="field-pair">
+            <label>Valor en pesos <input type="text" name="amount" inputmode="numeric" required maxlength="20" value="${values.amount ?? ""}" placeholder="25.000" autocomplete="off"></label>
+            <label>Vence en <select name="expiresInMinutes">${EXPIRY_OPTIONS.map(([v, l]) => html`<option value="${v}"${v === expiry ? raw(" selected") : ""}>${l}</option>`)}</select></label>
+          </div>
+          <label>Descripción <span class="hint">Opcional. La ve quien paga.</span><input type="text" name="description" maxlength="140" value="${values.description ?? ""}" placeholder="Pedido 123"></label>
+          <label>Quién va a pagar <span class="hint">Opcional. Ayuda a reconocer el pago si varios cobros piden el mismo valor.</span><input type="text" name="payerName" maxlength="120" value="${values.payerName ?? ""}" placeholder="Ana Pérez" autocomplete="off"></label>`)}
+        <div class="form-actions"><a class="btn btn-ghost" href="/charges">Cancelar</a><button class="btn btn-primary" type="submit"${usable.length === 0 ? raw(" disabled") : ""}>Crear cobro</button></div>
+      </form>`,
+  });
+}
+
+function submitNewCharge(s) {
+  const { store } = s.ctx;
+  if (manageableApps(s).length === 0) return notFound(s);
+  const values = {
+    account: String(s.form.account ?? ""),
+    amount: String(s.form.amount ?? "").trim(),
+    expiresInMinutes: String(s.form.expiresInMinutes ?? DEFAULT_EXPIRY),
+    description: String(s.form.description ?? "").trim(),
+    payerName: String(s.form.payerName ?? "").trim(),
+  };
+  const account = chargeableAccounts(s).find((a) => a.id === values.account);
+  if (!account) return newChargePage(s, { error: "Elige una cuenta.", values });
+  if (!account.payKey) return newChargePage(s, { error: html`${account.name} no tiene llave Bre-B: quien paga no sabría a dónde enviar. <a href="/accounts/${account.id}">Agrégala en la cuenta</a>.`, values });
+  const cents = parseAmountCents(values.amount);
+  if (cents == null || cents % 100 !== 0 || cents < 100 || cents > 100_000_000_00) return newChargePage(s, { error: "Escribe el valor en pesos, sin centavos, hasta 100.000.000. Ej. 25.000.", values });
+  const r = createCharge(store, store.apps.get(account.appId), {
+    account: account.id,
+    amount: cents / 100,
+    expiresInMinutes: Number(values.expiresInMinutes),
+    description: values.description,
+    payerName: values.payerName,
+  });
+  if (r.error) return newChargePage(s, { error: r.error, values });
+  s.audit("Creó un cobro", r.charge.id, `${fmtMoney(r.charge.amount)} · ${account.name}`);
+  return redirect(s.res, `/charges/${r.charge.id}?ok=charged`);
+}
+
+function chargePage(s, id) {
+  const { store, config } = s.ctx;
+  if (expireCharges(store, { publicUrl: config.publicUrl })) void deliverDue(store, { log: s.ctx.log }).catch(() => {});
+  const c = store.charges.get(id);
+  if (!c || !s.scope.can(c.appId)) return notFound(s, "Cobro no encontrado.");
+  const account = store.accounts.get(c.accountId);
+  const payment = c.paymentId ? store.payments.get(c.paymentId) : null;
+  const pending = c.status === "pending";
+  const base = config.publicUrl ?? `${s.secure ? "https" : "http"}://${s.req.headers.host}`;
+  const link = `${base}/c/${c.id}`;
+  const message = `Hola. ${c.description ? `Para pagar ${c.description}: ` : "Para pagar: "}${fmtMoney(c.amount)} por Bre-B, aquí están los datos: ${link}`;
+  return page(s, {
+    title: c.description ?? "Cobro",
+    active: "/charges",
+    body: html`
+      ${pending ? raw('<span data-autorefresh="15" hidden></span>') : ""}
+      <div class="head"><a class="back" href="/charges">← Cobros</a><div><h1>${c.description ?? "Cobro"} ${chargeStatus(c.status)}</h1>${c.reference ? html`<p class="muted">Ref. ${c.reference}</p>` : ""}</div></div>
+      ${msg(s)}
+      ${pending && account?.status === "pending" ? flash(html`<a href="/accounts/${account.id}">${account.name}</a> todavía no ha recibido ningún aviso del banco: termina de configurarla o este pago no se reconocerá solo.`, "warn") : ""}
+      <div class="card pay-hero">
+        <span class="tile-ico">${icon("charges")}</span>
+        <div class="pay-hero-main"><span class="stat-label">${pending ? "Valor a pagar" : "Valor del cobro"}</span><b>${fmtMoney(c.amount)}</b>${c.amount !== c.baseAmount ? html`<span class="muted">pedido ${fmtMoney(c.baseAmount)}</span>` : ""}</div>
+        <dl class="pay-hero-meta">
+          ${account ? html`<div><dt>Cuenta</dt><dd><a class="quiet" href="/accounts/${account.id}">${account.name}</a></dd></div>` : ""}
+          ${c.status === "paid" ? "" : html`<div><dt>${c.status === "expired" ? "Venció" : "Vence"}</dt><dd>${fmtDate(c.expiresAt)}</dd></div>`}
+          ${c.payerName ? html`<div><dt>Espera a</dt><dd>${c.payerName}</dd></div>` : ""}
+        </dl>
+      </div>
+      ${payment ? html`<div class="card"><h2>Pago recibido</h2><p><b>${fmtMoney(payment.amount)}</b> de ${payment.payerName ?? "?"}${payment.payerBank ? ` · desde ${payment.payerBank}` : ""} · ${fmtDate(payment.paidAt)}${c.match ? ` · ${MATCH_LABEL[c.match] ?? c.match}` : ""}</p></div>` : ""}
+      <div class="card">
+        <h2>Enlace de pago</h2>
+        <p class="muted small">${pending ? "Envíaselo a quien va a pagar: ahí ve el valor exacto, la llave Bre-B y cuándo se confirma. Esta página se actualiza sola." : "Este cobro ya no está esperando pago; el enlace muestra su estado."}</p>
+        <p>${copyable(link)}</p>
+        <div class="row mt">
+          ${pending ? html`<a class="btn btn-primary" href="https://wa.me/?text=${encodeURIComponent(message)}" target="_blank" rel="noopener noreferrer">${icon("send")}<span>Enviar por WhatsApp</span></a>` : ""}
+          <a class="btn" href="/c/${c.id}" target="_blank" rel="noopener">Ver página de pago</a>
+          ${pending && s.scope.can(c.appId, "manage") ? postButton(`/charges/${c.id}/cancel`, "Cancelar", s.session.csrf, { tone: "danger", confirm: "¿Cancelar este cobro? Su página de pago dirá que fue cancelado." }) : ""}
+        </div>
+      </div>`,
+  });
 }
 
 const REASON_TONE = { dkim_failed: "bad", weak_signature: "bad", not_owner: "bad", ambiguous_headers: "bad", unrecognized: "warn", unreadable: "warn", dkim_error: "warn", gmail_forwarding_confirmation: "ok" };
@@ -1313,7 +1430,7 @@ function personPage(s, id, { error = null, tempPassword = null } = {}) {
         ${csrfField(s.session.csrf)}
         ${section("Rol", self ? "No puedes cambiar tu propio rol." : "Un administrador ve y cambia todo, también los ajustes y las demás personas.", html`
           <div class="checks">${Object.entries(ROLE_LABEL).map(([v, l]) => html`<label><input type="radio" name="role" value="${v}"${person.role === v ? raw(" checked") : ""}${self ? raw(" disabled") : ""}> ${l}</label>`)}</div>`)}
-        <div class="client-only">${section("Apps del cliente", "Ver: pagos, cobros, cuentas y CSV. Gestionar: además crear y editar cuentas, webhook, API keys, cancelar cobros y asociar pagos.", apps.length
+        <div class="client-only">${section("Apps del cliente", "Ver: pagos, cobros, cuentas y CSV. Gestionar: además crear y editar cuentas, webhook, API keys, crear y cancelar cobros y asociar pagos.", apps.length
           ? html`${apps.map((a) => html`<label>${a.name} <select name="access_${a.id}">
               <option value="">Sin acceso</option>
               ${ACCESS_LEVELS.map((level) => html`<option value="${level}"${grants[a.id] === level ? raw(" selected") : ""}>${level === "view" ? "Ver" : "Gestionar"}</option>`)}

@@ -131,7 +131,7 @@ Otro administrador recibe una contraseña temporal y al entrar debe cambiarla y 
 
 **Acceso para clientes:** en **Ajustes → Personas con acceso** agrega a alguien como **Cliente** y, en
 **Permisos**, elige para cada app **Ver** (pagos, cobros, cuentas, CSV) o **Gestionar** (además crear y
-editar cuentas, URL del webhook, secreto, API keys, cancelar cobros y asociar pagos). Un cliente solo ve sus
+editar cuentas, URL del webhook, secreto, API keys, crear y cancelar cobros y asociar pagos). Un cliente solo ve sus
 apps; no ve Ajustes, dominios, otras personas ni el registro de cambios, y no puede crear apps ni apagar la
 suya (eso lo haces tú). Entra con contraseña temporal y código de 2 pasos, como un administrador.
 
@@ -304,7 +304,9 @@ cobro**, que muestra los cobros de esa cuenta del valor más parecido al menos) 
   `returnUrl`. Puedes no usarla y mostrar tú `amount` y `payTo`.
 - `charge.paid` trae el cobro y `data.payment`; `data.late: true` si el aviso llegó justo después de
   vencer (el valor de un cobro vencido queda reservado 30 min por eso). `charge.expired` al vencer.
-- En el panel, **Cobros** lista todos con su estado y permite cancelarlos.
+- En el panel, **Cobros** lista todos con su estado y permite cancelarlos. Con **Nuevo cobro** creas uno sin
+  programar (cuenta con llave Bre-B, valor, vencimiento) y envías el enlace por WhatsApp o lo copias. Si la app
+  tiene webhook, también recibe `charge.paid` o `charge.expired`.
 
 ### SDK (Node)
 
