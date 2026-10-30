@@ -94,6 +94,83 @@ if (filterForm) {
   if (pop) document.addEventListener("click", (e) => { if (pop.open && !pop.contains(e.target)) pop.open = false; });
 }
 
+// Passkeys: the browser's WebAuthn API speaks ArrayBuffers, the server base64url.
+const toBytes = (b64) => Uint8Array.from(atob(b64.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+const toB64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const postJson = async (url, csrf, body) => {
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", "X-CSRF": csrf }, body: JSON.stringify(body ?? {}) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Algo falló. Vuelve a intentarlo.");
+  return data;
+};
+// The person closing the browser's dialog is not an error worth explaining.
+const passkeyMessage = (err) => (err?.name === "NotAllowedError" || err?.name === "AbortError" ? "" : err?.name === "InvalidStateError" ? "Este dispositivo ya tiene una passkey tuya." : err?.message || "Algo falló.");
+
+if (window.PublicKeyCredential) {
+  const signIn = document.querySelector("[data-passkey-login]");
+  if (signIn) {
+    signIn.hidden = false;
+    const note = signIn.querySelector("p[role=status]");
+    const button = signIn.querySelector("button");
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      note.hidden = true;
+      try {
+        const options = await postJson("/login/passkey/options", signIn.dataset.csrf);
+        const cred = await navigator.credentials.get({ publicKey: { ...options, challenge: toBytes(options.challenge) } });
+        const done = await postJson("/login/passkey", signIn.dataset.csrf, {
+          id: cred.id,
+          clientDataJSON: toB64(cred.response.clientDataJSON),
+          authenticatorData: toB64(cred.response.authenticatorData),
+          signature: toB64(cred.response.signature),
+        });
+        location.href = done.redirect;
+      } catch (err) {
+        note.textContent = passkeyMessage(err);
+        note.hidden = !note.textContent;
+        button.disabled = false;
+      }
+    });
+  }
+
+  const add = document.querySelector("[data-passkey-add]");
+  if (add) {
+    add.hidden = false;
+    document.querySelector("[data-passkey-unsupported]")?.setAttribute("hidden", "");
+    const error = add.querySelector("[role=alert]");
+    const button = add.querySelector("button");
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      error.hidden = true;
+      try {
+        const options = await postJson("/me/passkeys/options", add.dataset.csrf, { code: add.querySelector("[name=passkeyCode]").value });
+        const cred = await navigator.credentials.create({
+          publicKey: {
+            ...options,
+            challenge: toBytes(options.challenge),
+            user: { ...options.user, id: toBytes(options.user.id) },
+            excludeCredentials: options.excludeCredentials.map((c) => ({ ...c, id: toBytes(c.id) })),
+          },
+        });
+        const done = await postJson("/me/passkeys/register", add.dataset.csrf, {
+          id: cred.id,
+          name: add.querySelector("[name=passkeyName]").value,
+          clientDataJSON: toB64(cred.response.clientDataJSON),
+          authenticatorData: toB64(cred.response.getAuthenticatorData()),
+          publicKey: toB64(cred.response.getPublicKey()),
+          alg: cred.response.getPublicKeyAlgorithm(),
+          transports: cred.response.getTransports?.() ?? [],
+        });
+        location.href = done.redirect;
+      } catch (err) {
+        error.textContent = passkeyMessage(err);
+        error.hidden = !error.textContent;
+        button.disabled = false;
+      }
+    });
+  }
+}
+
 // Installable app (PWA): the service worker only caches styles and icons, never pages with payment data.
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));

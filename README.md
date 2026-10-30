@@ -118,16 +118,23 @@ la variable se puede borrar (se ignora).
 | **Apps** | Cada proyecto (Ibirifas, otro SaaS…): URL del webhook, secreto para verificar la firma (mostrar / cambiar), **evento de prueba**, **API keys** (se muestran una sola vez y se pueden revocar), sus cuentas y el historial de **entregas** con **Reintentar** |
 | **Cuentas** | Cada cuenta bancaria que reenvía sus avisos: dirección generada sola, correos dueños, bancos, "referencia externa" (`tenantRef`), **guía paso a paso** para el Gmail del dueño con el **código de confirmación de Gmail** en pantalla, estado (*Esperando primer aviso* → *Activa*), **probar un aviso (.eml)**, desactivar |
 | **Pagos** | Buscar por app, cuenta, banco, pagador o referencia y fechas; descargar CSV |
-| **Correos** | Lo que llegó y no contó como pago, con el motivo (7 días) |
+| **Cobros** | Lo que le pides a un cliente, con su estado. **Nuevo cobro** crea uno sin programar y da el enlace de pago para copiar o enviar por WhatsApp |
+| **Correos rechazados** | Lo que llegó y no contó como pago, con el motivo (7 días) |
 | **Ajustes** | **Dominios de recepción** (cada uno con su guía de Cloudflare y el secreto de su Worker), días que se guardan los pagos, **personas con acceso** (administradores y clientes), registro de cambios |
 
 **Seguridad del panel:** contraseña (scrypt) + código de 2 pasos obligatorio para todos (un código no
-sirve dos veces), bloqueo tras intentos fallidos, sesiones de 12 h en cookie `HttpOnly` +
+sirve dos veces), **passkeys** opcionales, bloqueo tras intentos fallidos, sesiones de 12 h en cookie `HttpOnly` +
 `SameSite=Strict` (+ `Secure` con HTTPS), token CSRF en cada formulario, se rechazan envíos desde otros
 sitios, cabeceras CSP / `X-Frame-Options`, y un **registro de cambios** de quién hizo qué. Los
 secretos de webhook y de 2 pasos se guardan **cifrados** con `MASTER_KEY`; las API keys, solo su huella.
 Otro administrador recibe una contraseña temporal y al entrar debe cambiarla y configurar sus 2 pasos.
 
+
+**Passkeys:** en **Mi cuenta → Passkeys**, con tu código de 2 pasos actual, agregas una passkey (Face ID, huella,
+Windows Hello, 1Password…). Después entras con **Entrar con passkey**, sin correo, contraseña ni código: el
+dispositivo verifica que eres tú, y como la passkey está atada a este sitio, no sirve en una página falsa. La
+contraseña y el código siguen funcionando, por si pierdes el dispositivo. Si alguien pierde uno, un
+administrador le quita sus passkeys desde **Permisos**.
 
 **Acceso para clientes:** en **Ajustes → Personas con acceso** agrega a alguien como **Cliente** y, en
 **Permisos**, elige para cada app **Ver** (pagos, cobros, cuentas, CSV) o **Gestionar** (además crear y
@@ -198,7 +205,7 @@ nuevo), `not_approved`, `unknown_address`, `account_disabled`, `ambiguous_header
 
 ### Webhook
 
-`POST` a cada URL de la fuente, `Content-Type: application/json`:
+`POST` a la URL del webhook de la app, `Content-Type: application/json`:
 
 ```json
 {
@@ -375,15 +382,19 @@ INGEST_SECRET=$(openssl rand -hex 32) MASTER_KEY=$(openssl rand -hex 32) INBOUND
 # y abre el enlace /setup?token=… que aparece en la consola
 ```
 
-Node 22 (usa `node:sqlite`, sin dependencias nativas). Dependencias: `mailauth` (DKIM) y
-`postal-mime` (leer el correo).
+Para probar passkeys en local, abre el panel en `http://localhost:3000` (con una IP como `127.0.0.1`, el navegador no las permite).
+
+Node 22 (usa `node:sqlite`, sin dependencias nativas). Dependencias: `mailauth` (DKIM), `postal-mime`
+(leer el correo) y `qrcode` (el QR del código de 2 pasos). El CI corre las pruebas y además construye y
+arranca la imagen de Docker.
 
 ## Si cambias de dominio
 
 - **La dirección que recibe** (`pagos-…@pagos.edwsystem.com`) puede quedarse igual aunque tus apps
   cambien de dominio: nadie la ve y así no hay que tocar los filtros de Gmail.
 - Si cambias **el dominio de pagoradar**: Dokploy → *Domains* y `PUBLIC_URL`, y en el Worker la
-  variable `PAGORADAR_URL`.
+  variable `PAGORADAR_URL`. Las **passkeys** quedan atadas al dominio anterior y dejan de servir: entra con tu
+  contraseña y código, y agrégalas de nuevo. `PUBLIC_URL` debe ser la dirección con la que abres el panel.
 - Si cambias **el dominio de una app**: en el panel, **Apps → la app → URL del webhook**. Sin redesplegar.
 - Si cambias **el dominio de recepción**: agrégalo en **Ajustes → Dominios**, configura su Email Routing
   (subdominio + catch-all hacia el Worker) y hazlo **predeterminado** (aplica a las cuentas nuevas). Las cuentas que

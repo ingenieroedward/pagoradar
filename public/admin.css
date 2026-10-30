@@ -233,6 +233,12 @@ td .row { flex-wrap: nowrap; }
 
 /* ---------- forms */
 form.stack { display: grid; gap: 14px; }
+.stack-tight { display: grid; gap: 12px; }
+.stack-tight[hidden], .passkey-login[hidden], .flash[hidden] { display: none; }
+.passkey-login { display: grid; gap: 12px; margin-top: 14px; }
+.passkey-login .btn { min-height: 46px; font-size: 15px; }
+.passkey-login .or { display: flex; align-items: center; gap: 10px; margin: 0; color: var(--muted); font-size: 13px; }
+.passkey-login .or::before, .passkey-login .or::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
 label { display: grid; gap: 6px; font-weight: 600; font-size: 14px; }
 /* The hint reads under its field. */
 label > input, label > select, label > textarea { order: 1; }

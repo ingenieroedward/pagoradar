@@ -6,6 +6,7 @@ import { clientIp, cookie, list, parseCookies, parseForm, rateLimiter, readBody,
 import { hashPassword, newTotpSecret, randomToken, safeEqual, totpUri, verifyPassword, verifyTotp } from "../security.js";
 import { chooseDomain, sendTestEvent } from "../api.js";
 import { ACCESS_LEVELS } from "../store.js";
+import { PASSKEY_ALGS, newChallenge, verifyAssertion, verifyRegistration } from "../webauthn.js";
 import { deliverDue } from "../webhooks.js";
 import { parseAmountCents } from "../amount.js";
 import { createCharge, expireCharges, payManually } from "../charges.js";
@@ -50,6 +51,8 @@ const STATIC = {
   ),
 };
 const loginLimit = rateLimiter(10, 15 * 60_000);
+const passkeyLimit = rateLimiter(30, 15 * 60_000); // a sign-in takes two requests
+const MAX_PASSKEYS = 10;
 // Computed once at start-up, so even the first login for an unknown email takes as long as any other.
 const dummy = hashPassword(randomToken(16));
 const dummyHash = () => dummy;
@@ -71,6 +74,8 @@ const MESSAGES = {
   charged: "Cobro creado: envíale el enlace a quien va a pagar.",
   linked: "Pago asociado al cobro: se avisó a la app.",
   default: "Ahora es el dominio predeterminado.",
+  passkey: "Passkey agregada: ya puedes entrar con ella.",
+  "passkey-removed": "Passkey quitada.",
 };
 
 // ---------- helpers
@@ -168,6 +173,8 @@ export async function handleAdmin(req, res, url, ctx) {
   }
   if (path === "/setup") return redirect(res, "/login");
   if (path === "/login") return login(s, method);
+  if (path === "/login/passkey/options" && method === "POST") return passkeyLoginOptions(s);
+  if (path === "/login/passkey" && method === "POST") return passkeyLogin(s);
   if (path === "/login/2fa") return loginTotp(s, method);
   if (path === "/login/2fa/setup") return setupTotp(s, method);
 
@@ -178,7 +185,8 @@ export async function handleAdmin(req, res, url, ctx) {
   // ----- full session from here on
   let form = {};
   if (method === "POST") {
-    if (path.endsWith("/check")) {
+    // These read their own body (a file, or JSON from the page's script): the token comes in a header.
+    if (path.endsWith("/check") || path === "/me/passkeys/options" || path === "/me/passkeys/register") {
       if (!safeEqual(req.headers["x-csrf"] ?? "", s.session.csrf)) return sendJson(res, 403, { error: "CSRF" });
     } else {
       const body = await readBody(req, 256 * 1024);
@@ -231,6 +239,10 @@ export async function handleAdmin(req, res, url, ctx) {
   if (path === "/me" && method === "GET") return mePage(s);
   if (path === "/me/password" && method === "POST") return changePassword(s);
   if (path === "/me/totp-reset" && method === "POST") return resetTotp(s);
+  if (path === "/me/passkeys/options" && method === "POST") return passkeyOptions(s);
+  if (path === "/me/passkeys/register" && method === "POST") return passkeyRegister(s);
+  if ((m = path.match(/^\/me\/passkeys\/([\w-]+)\/delete$/)) && method === "POST") return passkeyRemove(s, m[1]);
+  if ((m = path.match(/^\/settings\/admins\/([\w-]+)\/passkeys\/delete$/)) && method === "POST") return personPasskeysRemove(s, m[1]);
   if (path === "/audit" && method === "GET") return auditPage(s);
   return notFound(s);
 }
@@ -253,6 +265,100 @@ async function readPublicForm(s) {
   const form = parseForm(body);
   const ok = s.cookies[PRE_CSRF_COOKIE] && safeEqual(form._csrf ?? "", s.cookies[PRE_CSRF_COOKIE]);
   return ok ? form : null;
+}
+
+/** The site passkeys belong to: the PUBLIC_URL (or, without one, wherever this was opened: local development). */
+function relyingParty(s) {
+  const url = new URL(s.ctx.config.publicUrl ?? `${s.secure ? "https" : "http"}://${s.req.headers.host}`);
+  return { id: url.hostname, origin: url.origin };
+}
+
+async function readJsonBody(req) {
+  const body = await readBody(req, 16 * 1024);
+  try {
+    const value = JSON.parse(body?.toString("utf8") ?? "");
+    return value && typeof value === "object" ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+const PASSKEY_FAILED = "No se pudo entrar con esa passkey. Usa tu contraseña o agrégala de nuevo en Mi cuenta.";
+
+/** Sign-in without an email: the browser offers the passkeys it has for this site. Tied to this browser's login form. */
+function passkeyLoginOptions(s) {
+  const pre = s.cookies[PRE_CSRF_COOKIE];
+  if (!pre || !safeEqual(s.req.headers["x-csrf"] ?? "", pre)) return sendJson(s.res, 403, { error: "La página venció; vuelve a cargarla." });
+  if (!passkeyLimit(clientIp(s.req))) return sendJson(s.res, 429, { error: "Demasiados intentos. Espera unos minutos." });
+  return sendJson(s.res, 200, { challenge: newChallenge(`login:${pre}`), rpId: relyingParty(s).id, timeout: 60_000, userVerification: "required" });
+}
+
+async function passkeyLogin(s) {
+  const { store } = s.ctx;
+  const pre = s.cookies[PRE_CSRF_COOKIE];
+  if (!pre || !safeEqual(s.req.headers["x-csrf"] ?? "", pre)) return sendJson(s.res, 403, { error: "La página venció; vuelve a cargarla." });
+  if (!passkeyLimit(clientIp(s.req))) return sendJson(s.res, 429, { error: "Demasiados intentos. Espera unos minutos." });
+  const body = await readJsonBody(s.req);
+  const passkey = store.passkeys.get(String(body.id ?? ""));
+  const person = passkey ? store.admins.get(passkey.adminId) : null;
+  const rp = relyingParty(s);
+  const signCount = person ? verifyAssertion(body, passkey, { rpId: rp.id, origin: rp.origin, owner: `login:${pre}` }) : null;
+  if (signCount === null) return sendJson(s.res, 400, { error: PASSKEY_FAILED });
+  store.passkeys.recordUse(passkey.id, signCount);
+  store.admins.recordLogin(person.id);
+  store.audit.add(person.email, "Entró al panel con passkey", passkey.name, clientIp(s.req));
+  return sendJson(s.res, 200, { redirect: "/" }, { "Set-Cookie": startSession(s, person.id, "full") });
+}
+
+/** Adding a passkey asks for a current 2-step code: it's a new way in, so a stolen session alone must not be enough. */
+async function passkeyOptions(s) {
+  const { store } = s.ctx;
+  const body = await readJsonBody(s.req);
+  if (!loginLimit(`totp:${s.admin.id}`)) return sendJson(s.res, 429, { error: "Demasiados intentos. Espera unos minutos." });
+  const step = verifyTotp(store.admins.totpSecret(s.admin.id), body.code, { lastStep: s.admin.totpLastStep });
+  if (step === null || !store.admins.useTotpStep(s.admin.id, step)) return sendJson(s.res, 400, { error: "Código incorrecto o ya usado. Espera el siguiente." });
+  const existing = store.passkeys.listFor(s.admin.id);
+  if (existing.length >= MAX_PASSKEYS) return sendJson(s.res, 400, { error: `Máximo ${MAX_PASSKEYS} passkeys: quita una primero.` });
+  const rp = relyingParty(s);
+  return sendJson(s.res, 200, {
+    challenge: newChallenge(`add:${s.admin.id}`),
+    rp: { id: rp.id, name: "pagoradar" },
+    user: { id: Buffer.from(s.admin.id).toString("base64url"), name: s.admin.email, displayName: s.admin.name || s.admin.email },
+    pubKeyCredParams: PASSKEY_ALGS.map((alg) => ({ type: "public-key", alg })),
+    authenticatorSelection: { residentKey: "required", requireResidentKey: true, userVerification: "required" },
+    attestation: "none",
+    timeout: 120_000,
+    excludeCredentials: existing.map((p) => ({ type: "public-key", id: p.id, transports: p.transports })),
+  });
+}
+
+async function passkeyRegister(s) {
+  const { store } = s.ctx;
+  const body = await readJsonBody(s.req);
+  const rp = relyingParty(s);
+  const key = verifyRegistration(body, { rpId: rp.id, origin: rp.origin, owner: `add:${s.admin.id}` });
+  if (!key) return sendJson(s.res, 400, { error: "No se pudo verificar la passkey. Vuelve a intentarlo." });
+  const name = String(body.name ?? "").trim().slice(0, 60) || "Passkey";
+  if (!store.passkeys.add({ ...key, adminId: s.admin.id, name })) return sendJson(s.res, 400, { error: "Esa passkey ya está agregada." });
+  s.audit("Agregó una passkey", s.admin.email, name);
+  return sendJson(s.res, 200, { redirect: "/me?ok=passkey" });
+}
+
+function passkeyRemove(s, id) {
+  const { store } = s.ctx;
+  const passkey = store.passkeys.get(id);
+  if (passkey && store.passkeys.remove(id, s.admin.id)) s.audit("Quitó una passkey", s.admin.email, passkey.name);
+  return redirect(s.res, "/me?ok=passkey-removed");
+}
+
+/** For a lost or stolen device: an admin can take away someone's passkeys. */
+function personPasskeysRemove(s, id) {
+  const { store } = s.ctx;
+  const person = store.admins.get(id);
+  if (!person) return notFound(s);
+  const removed = store.passkeys.removeAllFor(id);
+  if (removed) s.audit("Quitó las passkeys de otra persona", person.email, `${removed}`);
+  return redirect(s.res, `/settings/admins/${id}?ok=passkey-removed`);
 }
 
 function startSession(s, adminId, stage) {
@@ -341,6 +447,11 @@ async function login(s, method) {
           <label>Contraseña <input type="password" name="password" required autocomplete="current-password"></label>
           <button class="btn btn-primary" type="submit">Continuar</button>
         </form>
+        <div class="passkey-login" data-passkey-login data-csrf="${pre.value}" hidden>
+          <p class="or"><span>o</span></p>
+          <button class="btn" type="button">${icon("key")}<span>Entrar con passkey</span></button>
+          <p class="muted small" role="status" aria-live="polite" hidden></p>
+        </div>
       </div>`,
     }),
     { "Set-Cookie": pre.header },
@@ -1418,6 +1529,7 @@ function personPage(s, id, { error = null, tempPassword = null } = {}) {
   const apps = store.apps.list();
   const grants = store.access.forAdmin(id);
   const self = id === s.admin.id;
+  const passkeyCount = store.passkeys.listFor(id).length;
   return page(s, {
     title: person.email,
     active: "/settings",
@@ -1437,7 +1549,14 @@ function personPage(s, id, { error = null, tempPassword = null } = {}) {
             </select></label>`)}`
           : html`<p class="muted small">Aún no hay apps.</p>`)}</div>
         <div class="form-actions"><button class="btn btn-primary" type="submit">Guardar permisos</button></div>
-      </form>`,
+      </form>
+      ${!self && passkeyCount
+        ? html`<div class="card danger-zone">
+            <h2>Passkeys</h2>
+            <p class="muted small">Tiene ${passkeyCount} ${passkeyCount === 1 ? "passkey" : "passkeys"}. Si perdió un dispositivo, quítalas: seguirá entrando con su contraseña y su código de 2 pasos.</p>
+            <div class="row mt">${postButton(`/settings/admins/${id}/passkeys/delete`, "Quitar sus passkeys", s.session.csrf, { tone: "danger", confirm: `¿Quitar las passkeys de ${person.email}?` })}</div>
+          </div>`
+        : ""}`,
   });
 }
 
@@ -1631,6 +1750,7 @@ function domainAction(s, name, action) {
 function mePage(s, { error = null } = {}) {
   const csrf = s.session.csrf;
   const first = s.admin.mustChangePassword;
+  const passkeys = s.ctx.store.passkeys.listFor(s.admin.id);
   return page(s, {
     title: "Mi cuenta",
     active: "/me",
@@ -1651,7 +1771,26 @@ function mePage(s, { error = null } = {}) {
       </form>
       ${first
         ? ""
-        : html`<form method="post" action="/me/totp-reset" class="card">
+        : html`<div class="card">
+        ${section("Passkeys", "Entra con tu huella, tu cara o el PIN del dispositivo, sin contraseña ni código. Son más seguras porque no se pueden usar en un sitio falso. Tu contraseña y tu código de 2 pasos siguen sirviendo.", html`
+          ${passkeys.length
+            ? html`<ul class="list">${passkeys.map((p) => html`<li>
+                <span class="list-ico">${icon("key")}</span>
+                <div class="list-main"><b>${p.name}</b><span>Agregada ${fmtDate(p.createdAt)} · último uso ${p.lastUsedAt ? fmtAgo(p.lastUsedAt) : "nunca"}</span></div>
+                ${postButton(`/me/passkeys/${p.id}/delete`, "Quitar", csrf, { tone: "danger", small: true, confirm: `¿Quitar la passkey ${p.name}?` })}
+              </li>`)}</ul>`
+            : ""}
+          <div class="stack-tight" data-passkey-add data-csrf="${csrf}" hidden>
+            <div class="field-pair">
+              <label>Nombre <span class="hint">Para reconocerla después.</span><input type="text" name="passkeyName" maxlength="60" placeholder="iPhone de Ana" autocomplete="off"></label>
+              <label>Código actual de 2 pasos <span class="hint">De tu app autenticadora.</span><input type="text" name="passkeyCode" inputmode="numeric" maxlength="7" autocomplete="one-time-code" placeholder="123 456" class="code-input"></label>
+            </div>
+            <div><button class="btn" type="button">${icon("plus")}<span>Agregar passkey</span></button></div>
+            <p class="flash flash-bad" role="alert" hidden></p>
+          </div>
+          <p class="muted small" data-passkey-unsupported>Este navegador no permite agregar passkeys.</p>`)}
+      </div>
+      <form method="post" action="/me/totp-reset" class="card">
         ${csrfField(csrf)}
         ${section("Código de 2 pasos", "¿Cambiaste de celular? Escribe un código actual y configura la app autenticadora de nuevo.", html`
           <label>Código actual <input type="text" name="code" inputmode="numeric" maxlength="7" required autocomplete="one-time-code" placeholder="123 456" class="code-input"></label>`)}
@@ -1689,7 +1828,7 @@ function auditPage(s) {
     title: "Registro de cambios",
     active: "/audit",
     body: html`
-      <div class="head"><div><h1>Registro de cambios</h1><p class="muted">Quién hizo qué en el panel (se guarda un año).</p></div><a href="/settings">← Ajustes</a></div>
+      <div class="head"><a class="back" href="/settings">← Ajustes</a><div><h1>Registro de cambios</h1><p class="muted">Quién hizo qué en el panel (se guarda un año).</p></div></div>
       <div class="card">${rows.length === 0
         ? html`<p class="empty">Sin registros.</p>`
         : html`<div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Quién</th><th>Qué</th><th>Sobre</th></tr></thead><tbody>
