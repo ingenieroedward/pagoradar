@@ -1554,6 +1554,9 @@ async function chargePage(s, id) {
   const tryQr = isEmvQr(qr?.payload)
     ? { plain: await qrImage(withAmount(qr.payload, c.amount, "plain")), decimal: await qrImage(withAmount(qr.payload, c.amount, "decimal")) }
     : null;
+  // Only when it's a different QR: a bank's that's already marked as one-time would come out the same.
+  const unmarked = tryQr ? withAmount(qr.payload, c.amount, "plain", { oneTime: false }) : null;
+  if (tryQr && unmarked !== withAmount(qr.payload, c.amount, "plain")) tryQr.unmarked = await qrImage(unmarked);
   const message = `Hola. ${c.description ? `Para pagar ${c.description}: ` : "Para pagar: "}${fmtMoney(c.amount)} por Bre-B, aquí están los datos: ${link}`;
   return page(s, {
     title: c.description ?? "Cobro",
@@ -1588,10 +1591,11 @@ async function chargePage(s, id) {
       ${tryQr
         ? html`<div class="card">
             <h2>Probar el QR con el valor (experimento)</h2>
-            <p class="muted small">Escanea cada uno con la app de tu banco desde otro dispositivo, sin confirmar todavía, y mira si muestra ${fmtMoney(c.amount)}. El que funcione lo enciendes en Configuración de la cuenta.</p>
+            <p class="muted small">Escanea cada uno con la app de tu banco desde otro dispositivo, sin confirmar todavía, y mira si muestra ${fmtMoney(c.amount)}. El que funcione lo enciendes en Configuración de la cuenta.${tryQr.unmarked ? " El último todavía es solo de prueba: no se puede encender." : ""}</p>
             <div class="qr-pair mt">
               <figure><img class="qr-img" src="${tryQr.plain}" alt="QR de prueba con el valor sin decimales" width="200" height="200"><figcaption>Sin decimales</figcaption></figure>
               <figure><img class="qr-img" src="${tryQr.decimal}" alt="QR de prueba con el valor con decimales" width="200" height="200"><figcaption>Con decimales</figcaption></figure>
+              ${tryQr.unmarked ? html`<figure><img class="qr-img" src="${tryQr.unmarked}" alt="QR de prueba con el valor sin marca de un solo uso" width="200" height="200"><figcaption>Sin decimales, sin marca de un solo uso</figcaption></figure>` : ""}
             </div>
           </div>`
         : ""}`,

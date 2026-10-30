@@ -570,6 +570,7 @@ test("QR: the charge's link, the bank's image on the payment page, and the amoun
   r = await b.req(`/charges/${charge.id}`);
   assert.match(r.text, /Probar el QR con el valor/);
   assert.match(r.text, /alt="QR de prueba con el valor con decimales"/);
+  assert.match(r.text, /alt="QR de prueba con el valor sin marca de un solo uso"/);
 
   // On: customers get a QR with the amount; it's not the bank's image.
   await settings({ payload: staticQr, amountFormat: "decimal" });
