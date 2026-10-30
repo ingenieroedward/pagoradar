@@ -402,6 +402,10 @@ form.inline { display: inline; }
 .steps > li:not(:last-child)::after { content: ""; position: absolute; left: 13.5px; top: 34px; bottom: 2px; width: 1px; background: var(--line-2); }
 .qr { background: #fff; padding: 10px; border-radius: 12px; width: 200px; max-width: 100%; margin: 10px 0; }
 .qr svg { display: block; width: 100%; height: auto; }
+.qr-img { display: block; width: 200px; max-width: 100%; height: auto; background: #fff; padding: 10px; border-radius: 12px; }
+.qr-pair { display: flex; flex-wrap: wrap; gap: 16px; }
+.qr-pair figure { margin: 0; }
+.qr-pair figcaption { margin-top: 6px; font-size: 13px; color: var(--muted); }
 details summary { cursor: pointer; color: var(--accent); font-weight: 600; }
 pre { white-space: pre-wrap; word-break: break-word; background: var(--bg); border: 1px solid var(--line); padding: 12px; border-radius: 10px; font-size: 12px; max-height: 360px; overflow: auto; }
 .empty { color: var(--muted); padding: 28px 0; text-align: center; }

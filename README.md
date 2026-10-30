@@ -312,6 +312,11 @@ cobro**, que muestra los cobros de esa cuenta del valor más parecido al menos) 
   de pedido: única por app, y crear otra vez con la misma devuelve el mismo cobro (reintentos seguros).
 - El cobro trae `amount` (lo que debe pagar), `baseAmount` (lo pedido), `adjustment`, `checkoutUrl`
   y `payTo` (`key`, `holder`, `banks`); ya pagado, `match` y `paidAmount` (lo que trajo el pago).
+- **QR:** cada cobro tiene en el panel el **QR de su enlace**, para cobrar en persona. En **Configuración de la
+  cuenta → QR de Bre-B** subes el QR de tu banco y aparece en la página de pago; el cliente lo escanea y escribe el
+  valor. **QR con el valor (experimento):** pagoradar genera uno que ya trae el valor. Está apagado por defecto
+  porque no sabemos qué bancos lo aceptan: la página de cada cobro muestra dos versiones para probar, y la que
+  funcione se enciende en la cuenta. Solo funciona si el texto del QR es del formato de pagos EMVCo.
 - **Página de pago** (`/c/<id>`, pública, sin datos privados): valor con botón Copiar, la **llave
   Bre-B** y el titular de la cuenta (`payKey` / `payHolder`, desde el panel o
   `PATCH /v1/accounts/<id>`), cuenta regresiva y el estado, que se actualiza solo. Al pagarse vuelve a
@@ -319,7 +324,7 @@ cobro**, que muestra los cobros de esa cuenta del valor más parecido al menos) 
 - `charge.paid` trae el cobro y `data.payment`; `data.late: true` si el aviso llegó justo después de
   vencer (el valor de un cobro vencido queda reservado 30 min por eso). `charge.expired` al vencer.
 - En el panel, **Cobros** lista todos con su estado y permite cancelarlos. Con **Nuevo cobro** creas uno sin
-  programar (cuenta con llave Bre-B, valor, vencimiento) y envías el enlace por WhatsApp o lo copias. Si la app
+  programar (cuenta con llave Bre-B, valor, valor único, vencimiento) y envías el enlace por WhatsApp o lo copias. Si la app
   tiene webhook, también recibe `charge.paid` o `charge.expired`.
 
 ### SDK (Node)
