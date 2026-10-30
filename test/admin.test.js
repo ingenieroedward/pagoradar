@@ -12,6 +12,11 @@ import { validateSources } from "../src/config.js";
 import { masterKeyFrom, totpAt, totpStep, decrypt } from "../src/security.js";
 import { deliver } from "../worker/src/index.js";
 import { OWNER, buildEmail, gmailConfirmationEmail, nequiNegociosEmail, resolverFor } from "./fixtures.js";
+import { crc16 } from "../src/emvqr.js";
+
+const tlv = (id, v) => `${id}${String(v.length).padStart(2, "0")}${v}`;
+const staticBody = tlv("00", "01") + tlv("01", "11") + tlv("26", tlv("01", "@tienda")) + tlv("53", "170") + tlv("58", "CO") + tlv("59", "TIENDA PRUEBA");
+const staticQr = `${staticBody}6304${crc16(`${staticBody}6304`)}`;
 
 const INGEST_SECRET = "i".repeat(40);
 const masterKey = masterKeyFrom("cd".repeat(32));
@@ -516,6 +521,87 @@ test("new charge from the panel: link to send, and only for those who manage an 
   assert.equal((await v.req("/charges", { method: "POST", form: { _csrf: v.csrf(), account: otherAcc.id, amount: "1000" } })).status, 400, "not someone else's account");
   store.admins.remove(viewer.id);
   store.charges.cancel(id);
+});
+
+test("QR: the charge's link, the bank's image on the payment page, and the amount inside it only when switched on", async () => {
+  const b = await loggedIn();
+  const app = store.apps.create({ name: "Con QR" });
+  const acc = store.accounts.create({ appId: app.id, name: "Caja QR", ownerEmails: [OWNER], banks: ["nequi"], domain: "pagos.example.com" });
+  store.accounts.update(acc.id, { payKey: "@cajaqr", payHolder: "Caja" });
+  const r0 = await b.req(`/accounts/${acc.id}`);
+  const csrf = r0.text.match(/data-csrf="([^"]+)"/)[1];
+  assert.match(r0.text, /data-qr-upload/);
+  const charge = store.charges.create({ appId: app.id, accountId: acc.id, baseCents: 10000, amountCents: 10100, description: "Con QR", expiresAt: new Date(Date.now() + 600_000).toISOString() });
+  const page = async () => (await browser().req(`/c/${charge.id}`)).text;
+  assert.doesNotMatch(await page(), /O paga con QR/, "no QR yet");
+
+  // The link's QR, on the charge's page.
+  let r = await b.req(`/charges/${charge.id}`);
+  assert.match(r.text, /alt="Código QR del enlace de pago"/);
+  assert.doesNotMatch(r.text, /Probar el QR con el valor/, "nothing to try yet");
+
+  // The bank's image: PNG or JPEG by its bytes, not by what it says it is.
+  const upload = (body, headers = {}) => b.req(`/accounts/${acc.id}/qr`, { method: "POST", body, headers: { "content-type": "image/png", "x-csrf": csrf, ...headers } });
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(40)]);
+  assert.equal((await b.req(`/accounts/${acc.id}/qr`, { method: "POST", body: png, headers: { "content-type": "image/png" } })).status, 403, "CSRF");
+  assert.equal((await upload(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'))).status, 400, "an SVG could carry a script");
+  assert.equal((await upload(Buffer.concat([png, Buffer.alloc(300 * 1024)]))).status, 413);
+  assert.equal(store.accountQr.get(acc.id), undefined);
+  r = await upload(png, { "x-qr-payload": encodeURIComponent("no es un qr") });
+  assert.equal(r.status, 200);
+  assert.equal(store.accountQr.get(acc.id).payload, null, "text that isn't a payment QR isn't kept");
+  let text = await page();
+  assert.match(text, /O paga con QR/);
+  assert.match(text, /src="data:image\/png;base64,/);
+  assert.match(text, /escribe exactamente/);
+  assert.match(text, /@cajaqr/, "the key is still there");
+  assert.match(text, /download="qr-pago\.png"/);
+
+  // Its text: only a real payment QR; the page sends it when the browser could read it.
+  const settings = (o) => b.req(`/accounts/${acc.id}/qr/settings`, { method: "POST", form: { _csrf: csrf, ...o } });
+  assert.equal((await settings({ payload: "hola", amountFormat: "" })).status, 400);
+  assert.equal((await settings({ payload: "", amountFormat: "plain" })).status, 400, "nothing to put the amount in");
+  r = await settings({ payload: staticQr, amountFormat: "" });
+  assert.equal(r.location, `/accounts/${acc.id}?ok=saved`);
+  assert.match((await b.req(`/accounts/${acc.id}`)).text, /Formato de pagos reconocido/);
+
+  // Off: customers keep the bank's image, but the owner can already try both formats.
+  assert.match(await page(), /escribe exactamente/);
+  r = await b.req(`/charges/${charge.id}`);
+  assert.match(r.text, /Probar el QR con el valor/);
+  assert.match(r.text, /alt="QR de prueba con el valor con decimales"/);
+
+  // On: customers get a QR with the amount; it's not the bank's image.
+  await settings({ payload: staticQr, amountFormat: "decimal" });
+  text = await page();
+  assert.match(text, /debe mostrar/);
+  assert.doesNotMatch(text, /escribe exactamente/);
+  assert.match(text, /@cajaqr/, "the key is still there, in case a bank refuses it");
+  assert.equal(store.accountQr.get(acc.id).image.startsWith("data:image/png"), true, "the bank's image is kept");
+
+  // Someone who can only look.
+  const { hashPassword } = await import("../src/security.js");
+  const viewer = store.admins.create({ email: "ve-qr@example.com", passwordHash: await hashPassword("clave-larga-123"), role: "client" });
+  store.access.set(viewer.id, app.id, "view");
+  const v = browser();
+  v.jar.set("pr_s", store.sessions.create(viewer.id, "full", "127.0.0.1"));
+  const vPage = await v.req(`/accounts/${acc.id}`);
+  assert.doesNotMatch(vPage.text, /data-qr-upload/);
+  assert.doesNotMatch((await v.req(`/charges/${charge.id}`)).text, /Probar el QR con el valor/);
+  const vCsrf = store.db.prepare("SELECT csrf FROM sessions ORDER BY created_at DESC, rowid DESC LIMIT 1").get().csrf;
+  assert.equal((await v.req(`/accounts/${acc.id}/qr`, { method: "POST", body: png, headers: { "content-type": "image/png", "x-csrf": vCsrf } })).status, 404);
+  assert.equal((await v.req(`/accounts/${acc.id}/qr/delete`, { method: "POST", form: { _csrf: vCsrf } })).status, 404);
+  store.admins.remove(viewer.id);
+
+  // Paid or removed: no QR.
+  store.charges.cancel(charge.id);
+  assert.doesNotMatch(await page(), /O paga con QR/);
+  r = await b.req(`/accounts/${acc.id}/qr/delete`, { method: "POST", form: { _csrf: csrf } });
+  assert.equal(r.location, `/accounts/${acc.id}?ok=qr-removed`);
+  assert.equal(store.accountQr.get(acc.id), undefined);
+  store.accountQr.set(acc.id, { image: "data:image/png;base64,AAAA" });
+  store.accounts.remove(acc.id);
+  assert.equal(store.accountQr.get(acc.id), undefined, "goes with the account");
 });
 
 test("clients: only their apps, with view or manage access", async () => {

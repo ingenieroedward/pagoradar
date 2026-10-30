@@ -218,6 +218,17 @@ ALTER TABLE admins ADD COLUMN invite_hash TEXT;
 ALTER TABLE admins ADD COLUMN invite_expires_at TEXT;
 `;
 
+// v8: an account's Bre-B QR. Its own table: the image is too heavy to come along with every list of accounts.
+const V8 = `
+CREATE TABLE account_qr (
+  account_id TEXT PRIMARY KEY,
+  image TEXT,
+  payload TEXT,
+  amount_format TEXT,
+  updated_at TEXT NOT NULL
+);
+`;
+
 const INVITE_DAYS = 7;
 
 export const ROLES = ["admin", "client"];
@@ -243,7 +254,7 @@ export function openStore(path, { masterKey } = {}) {
   db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
   db.exec(V1);
   const version = db.prepare("PRAGMA user_version").get().user_version;
-  for (const [v, sql] of [[2, V2], [3, V3], [4, V4], [5, V5], [6, V6], [7, V7]]) {
+  for (const [v, sql] of [[2, V2], [3, V3], [4, V4], [5, V5], [6, V6], [7, V7], [8, V8]]) {
     if (version >= v) continue;
     db.exec("BEGIN");
     try {
@@ -485,8 +496,30 @@ export function openStore(path, { masterKey } = {}) {
     remove(id) {
       // Its open charges can't be paid anymore.
       run("UPDATE charges SET status = 'canceled', canceled_at = ? WHERE account_id = ? AND status = 'pending'", now(), id);
+      run("DELETE FROM account_qr WHERE account_id = ?", id);
       return run("DELETE FROM accounts WHERE id = ?", id).changes === 1;
     },
+  };
+
+  // ---------- an account's Bre-B QR: the bank's image, and optionally its text, to put the amount in (experimental)
+  const accountQr = {
+    get(accountId) {
+      const r = one("SELECT * FROM account_qr WHERE account_id = ?", accountId);
+      return r && { image: r.image, payload: r.payload, amountFormat: r.amount_format };
+    },
+    /** Only the fields given change. */
+    set(accountId, { image, payload, amountFormat }) {
+      const cur = accountQr.get(accountId) ?? {};
+      run(
+        "INSERT INTO account_qr (account_id, image, payload, amount_format, updated_at) VALUES (?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET image = excluded.image, payload = excluded.payload, amount_format = excluded.amount_format, updated_at = excluded.updated_at",
+        accountId,
+        image === undefined ? (cur.image ?? null) : image,
+        payload === undefined ? (cur.payload ?? null) : payload,
+        amountFormat === undefined ? (cur.amountFormat ?? null) : amountFormat,
+        now(),
+      );
+    },
+    remove: (accountId) => run("DELETE FROM account_qr WHERE account_id = ?", accountId),
   };
 
   // ---------- payments (`source` = app id)
@@ -932,6 +965,7 @@ export function openStore(path, { masterKey } = {}) {
     apps,
     keys,
     accounts,
+    accountQr,
     payments,
     charges,
     deliveries,

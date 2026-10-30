@@ -41,7 +41,7 @@ export function createApp(ctx) {
         return sendJson(res, 200, await ingestEmail(store, raw, req.headers["x-pagoradar-to"], { resolver, publicUrl: config.publicUrl, log }));
       }
       if (await handleApi(req, res, url, full)) return;
-      if (handleCheckout(req, res, url, full)) return;
+      if (await handleCheckout(req, res, url, full)) return;
       if (handleDocs(req, res, url, full)) return;
       return await handleAdmin(req, res, url, full);
     } catch (e) {

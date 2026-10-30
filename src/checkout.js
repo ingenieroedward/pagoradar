@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import QRCode from "qrcode";
+import { isEmvQr, withAmount } from "./emvqr.js";
 import { expireCharges } from "./charges.js";
 import { deliverDue } from "./webhooks.js";
 import { clientIp, rateLimiter, sendHtml, sendJson } from "./http.js";
@@ -66,7 +68,25 @@ function statusBlock(charge, remainingSec) {
   </section>`;
 }
 
-function chargePage(charge, account) {
+/** The account's Bre-B QR, if it has one: with the amount inside when that's switched on, otherwise the bank's image. */
+async function qrSection(charge, qr) {
+  if (!qr) return "";
+  const dynamic = qr.amountFormat && isEmvQr(qr.payload);
+  const src = dynamic ? await QRCode.toDataURL(withAmount(qr.payload, charge.amount, qr.amountFormat), { margin: 1, width: 320 }) : qr.image;
+  if (!src) return "";
+  const ext = src.startsWith("data:image/jpeg") ? "jpg" : "png";
+  return html`<section class="how pay-qr">
+    <h2>O paga con QR</h2>
+    <img src="${src}" alt="Código QR para pagar por Bre-B" width="240" height="240">
+    <p class="muted small">${dynamic
+      ? html`Escanéalo con la app de tu banco: debe mostrar <b>${fmtMoney(charge.amount)}</b>. Si no lo acepta, usa la llave de arriba.`
+      : html`Escanéalo con la app de tu banco y escribe exactamente <b>${fmtMoney(charge.amount)}</b>.`}</p>
+    <a class="btn btn-small" href="${src}" download="qr-pago.${ext}">Descargar QR</a>
+    <p class="muted small">¿Pagas desde este celular? Descárgalo y súbelo desde la opción de QR de tu banco.</p>
+  </section>`;
+}
+
+function chargePage(charge, account, qrBlock = "") {
   const remainingSec = Math.max(0, Math.round((new Date(charge.expiresAt).getTime() - Date.now()) / 1000));
   const adjustment = charge.amount - charge.baseAmount;
   const open = charge.status === "pending";
@@ -102,7 +122,8 @@ function chargePage(charge, account) {
           : html`<li>Envía a la cuenta de <b>${account?.payHolder ?? name}</b>${banks ? ` (${banks})` : ""} que te indicó el comercio.</li>`}
         <li>Escribe el valor exacto: <b>${fmtMoney(charge.amount)}</b>, y confirma.</li>
       </ol>
-    </section>`
+    </section>
+    ${qrBlock}`
       : ""}
 
     <footer class="foot">Pago verificado con el aviso de tu banco · <span>pagoradar</span></footer>
@@ -111,7 +132,7 @@ function chargePage(charge, account) {
 }
 
 /** Public pages for a charge: GET /c/<id> (what to pay and how) and GET /c/<id>/status (polled by the page). */
-export function handleCheckout(req, res, url, ctx) {
+export async function handleCheckout(req, res, url, ctx) {
   const path = url.pathname.replace(/\/+$/, "");
   if (req.method === "GET" && STATIC[path]) {
     const s = STATIC[path];
@@ -151,6 +172,7 @@ export function handleCheckout(req, res, url, ctx) {
     sendHtml(res, 404, shell("Cobro no encontrado", html`<section class="state state-off"><h2>Cobro no encontrado</h2><p>Revisa el enlace que te enviaron.</p></section>`));
     return true;
   }
-  sendHtml(res, 200, chargePage(charge, store.accounts.get(charge.accountId)), { "Referrer-Policy": "no-referrer" });
+  const qrBlock = charge.status === "pending" ? await qrSection(charge, store.accountQr.get(charge.accountId)) : "";
+  sendHtml(res, 200, chargePage(charge, store.accounts.get(charge.accountId), qrBlock), { "Referrer-Policy": "no-referrer" });
   return true;
 }

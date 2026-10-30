@@ -6,6 +6,7 @@ import { clientIp, cookie, list, parseCookies, parseForm, rateLimiter, readBody,
 import { hashPassword, newTotpSecret, randomToken, safeEqual, totpUri, verifyPassword, verifyTotp } from "../security.js";
 import { chooseDomain, sendTestEvent } from "../api.js";
 import { ACCESS_LEVELS } from "../store.js";
+import { isEmvQr, withAmount } from "../emvqr.js";
 import { PASSKEY_ALGS, newChallenge, verifyAssertion, verifyRegistration } from "../webauthn.js";
 import { deliverDue } from "../webhooks.js";
 import { parseAmountCents } from "../amount.js";
@@ -53,6 +54,8 @@ const STATIC = {
 const loginLimit = rateLimiter(10, 15 * 60_000);
 const passkeyLimit = rateLimiter(30, 15 * 60_000); // a sign-in takes two requests
 const MAX_PASSKEYS = 10;
+const MAX_QR_BYTES = 300 * 1024;
+const QR_AMOUNT_FORMATS = [["", "Apagado: usar la imagen de mi banco"], ["plain", "Encendido, valor sin decimales (101)"], ["decimal", "Encendido, valor con decimales (101.00)"]];
 // Computed once at start-up, so even the first login for an unknown email takes as long as any other.
 const dummy = hashPassword(randomToken(16));
 const dummyHash = () => dummy;
@@ -74,6 +77,8 @@ const MESSAGES = {
   charged: "Cobro creado: envíale el enlace a quien va a pagar.",
   linked: "Pago asociado al cobro: se avisó a la app.",
   default: "Ahora es el dominio predeterminado.",
+  qr: "QR guardado: ya aparece en la página de pago.",
+  "qr-removed": "QR quitado.",
   passkey: "Passkey agregada: ya puedes entrar con ella.",
   "passkey-removed": "Passkey quitada.",
 };
@@ -188,7 +193,7 @@ export async function handleAdmin(req, res, url, ctx) {
   let form = {};
   if (method === "POST") {
     // These read their own body (a file, or JSON from the page's script): the token comes in a header.
-    if (path.endsWith("/check") || path === "/me/passkeys/options" || path === "/me/passkeys/register") {
+    if (path.endsWith("/check") || /^\/accounts\/[\w-]+\/qr$/.test(path) || path === "/me/passkeys/options" || path === "/me/passkeys/register") {
       if (!safeEqual(req.headers["x-csrf"] ?? "", s.session.csrf)) return sendJson(res, 403, { error: "CSRF" });
     } else {
       const body = await readBody(req, 256 * 1024);
@@ -223,6 +228,8 @@ export async function handleAdmin(req, res, url, ctx) {
   if ((m = path.match(/^\/accounts\/([\w-]+)$/))) return method === "POST" ? updateAccount(s, m[1]) : accountPage(s, m[1]);
   if ((m = path.match(/^\/accounts\/([\w-]+)\/(toggle|delete)$/)) && method === "POST") return accountAction(s, m[1], m[2]);
   if ((m = path.match(/^\/accounts\/([\w-]+)\/check$/)) && method === "POST") return checkEmail(s, m[1]);
+  if ((m = path.match(/^\/accounts\/([\w-]+)\/qr$/)) && method === "POST") return uploadQr(s, m[1]);
+  if ((m = path.match(/^\/accounts\/([\w-]+)\/qr\/(settings|delete)$/)) && method === "POST") return qrAction(s, m[1], m[2]);
   if (path === "/payments" && method === "GET") return paymentsPage(s);
   if (path === "/payments.csv" && method === "GET") return paymentsCsv(s);
   if ((m = path.match(/^\/payments\/(pay_[\w]+)\/link$/))) return method === "POST" ? linkPayment(s, m[1]) : linkPaymentPage(s, m[1]);
@@ -1079,6 +1086,8 @@ function accountPage(s, id, { error = null } = {}) {
   const rejected = store.inbox.list({ accountId: id, limit: 10 });
   const waiting = a.status === "pending";
   const okParam = s.url.searchParams.get("ok");
+  const qr = store.accountQr.get(id);
+  const qrKnown = isEmvQr(qr?.payload);
   const gmailSteps = html`<ol class="steps">
     <li>Gmail → ⚙️ <b>Ver toda la configuración</b> → <b>Reenvío y correo POP/IMAP</b> → <b>Agregar una dirección de reenvío</b>: ${copyable(a.address)}</li>
     <li>Gmail manda un código de confirmación a esa dirección; aparece aquí:
@@ -1147,6 +1156,21 @@ function accountPage(s, id, { error = null } = {}) {
           </div>
         </div>
       </div>
+        <div class="card" data-qr-upload="/accounts/${id}/qr" data-csrf="${csrf}">
+          <h2>QR de Bre-B</h2>
+          <p class="muted small">El QR que te da tu banco. Aparece en la página de pago, junto a la llave; el cliente lo escanea y escribe el valor exacto.</p>
+          ${qr?.image ? html`<img class="qr-img mt" src="${qr.image}" alt="QR de Bre-B de esta cuenta" width="200" height="200"><div class="row mt">${postButton(`/accounts/${id}/qr/delete`, "Quitar QR", csrf, { tone: "danger", small: true, confirm: "¿Quitar el QR de esta cuenta?" })}</div>` : ""}
+          <label class="drop mt">${icon("upload")}<span><b>${qr?.image ? "Cambiar imagen" : "Elegir imagen"}</b><span class="muted small">PNG o JPG, hasta 300 KB</span></span><input type="file" accept="image/png,image/jpeg"></label>
+          <p class="flash flash-bad mt" role="alert" hidden></p>
+        </div>
+        <form method="post" action="/accounts/${id}/qr/settings" class="card">
+          ${csrfField(csrf)}
+          ${section("QR con el valor (experimento)", "Pagoradar genera un QR que ya trae el valor, para que el cliente no lo escriba. No sabemos si todos los bancos lo aceptan: pruébalo antes con un cobro pequeño. La llave siempre sigue en la página.", html`
+            <label>Texto del QR <span class="hint">${qr?.payload ? "Leído o pegado antes." : "Se lee solo al subir la imagen si tu navegador puede; si no, escanéalo con un lector de QR y pégalo aquí."}</span><textarea name="payload" rows="3" spellcheck="false">${qr?.payload ?? ""}</textarea></label>
+            ${qr?.payload ? (qrKnown ? html`<p>${badge("Formato de pagos reconocido", "ok")}</p>` : html`<p>${badge("Formato no reconocido", "warn")}</p>`) : ""}
+            <label>Mostrar a los clientes <select name="amountFormat">${QR_AMOUNT_FORMATS.map(([v, l]) => html`<option value="${v}"${v === (qr?.amountFormat ?? "") ? raw(" selected") : ""}>${l}</option>`)}</select></label>`)}
+          <div class="form-actions"><button class="btn" type="submit">Guardar</button></div>
+        </form>
       </details>` : ""}`,
   });
 }
@@ -1176,6 +1200,44 @@ function accountAction(s, id, action) {
   store.accounts.remove(id);
   s.audit("Eliminó la cuenta receptora", id, a.address);
   return redirect(s.res, "/accounts?ok=deleted");
+}
+
+/** The account's Bre-B QR, as the bank gives it: a PNG or JPEG, told apart by its bytes. The page may send the text it read from it. */
+async function uploadQr(s, id) {
+  const { store } = s.ctx;
+  const a = store.accounts.get(id);
+  if (!a || !s.scope.can(a.appId, "manage")) return sendJson(s.res, 404, { error: "Cuenta no encontrada" });
+  const body = await readBody(s.req, MAX_QR_BYTES);
+  if (body === null) return sendJson(s.res, 413, { error: "La imagen pesa demasiado: máximo 300 KB." });
+  const isPng = body.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  const isJpeg = body.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]));
+  if (!isPng && !isJpeg) return sendJson(s.res, 400, { error: "Sube una imagen PNG o JPG." });
+  let payload;
+  try {
+    const read = decodeURIComponent(String(s.req.headers["x-qr-payload"] ?? ""));
+    if (isEmvQr(read)) payload = read;
+  } catch {}
+  store.accountQr.set(id, { image: `data:image/${isPng ? "png" : "jpeg"};base64,${body.toString("base64")}`, payload });
+  s.audit("Subió el QR de la cuenta", id, a.name);
+  return sendJson(s.res, 200, { redirect: `/accounts/${id}?ok=qr` });
+}
+
+function qrAction(s, id, action) {
+  const { store } = s.ctx;
+  const a = store.accounts.get(id);
+  if (!a || !s.scope.can(a.appId, "manage")) return notFound(s, "Cuenta no encontrada.");
+  if (action === "delete") {
+    store.accountQr.remove(id);
+    s.audit("Quitó el QR de la cuenta", id, a.name);
+    return redirect(s.res, `/accounts/${id}?ok=qr-removed`);
+  }
+  const payload = String(s.form.payload ?? "").trim();
+  const amountFormat = QR_AMOUNT_FORMATS.some(([v]) => v && v === s.form.amountFormat) ? s.form.amountFormat : null;
+  if (payload && !isEmvQr(payload)) return accountPage(s, id, { error: "Ese texto no es un QR de pagos válido: revisa que esté completo." });
+  if (amountFormat && !payload) return accountPage(s, id, { error: "Para incluir el valor, primero pega el texto del QR." });
+  store.accountQr.set(id, { payload: payload || null, amountFormat });
+  s.audit("Cambió el QR con valor de la cuenta", id, amountFormat ?? "apagado");
+  return redirect(s.res, `/accounts/${id}?ok=saved`);
 }
 
 async function checkEmail(s, id) {
@@ -1474,7 +1536,7 @@ function submitNewCharge(s) {
   return redirect(s.res, `/charges/${r.charge.id}?ok=charged`);
 }
 
-function chargePage(s, id) {
+async function chargePage(s, id) {
   const { store, config } = s.ctx;
   if (expireCharges(store, { publicUrl: config.publicUrl })) void deliverDue(store, { log: s.ctx.log }).catch(() => {});
   const c = store.charges.get(id);
@@ -1485,6 +1547,13 @@ function chargePage(s, id) {
   const link = `${publicBase(s)}/c/${c.id}`;
   // Same amount on purpose: without an expected payer, a notice for it can't tell them apart.
   const sameAmount = pending && !c.payerName && store.charges.candidates(c.accountId, c.amountCents, new Date().toISOString(), 0).some((o) => o.id !== c.id && o.status === "pending");
+  const qrImage = (text) => QRCode.toDataURL(text, { margin: 1, width: 320 });
+  const linkQr = pending ? await qrImage(link) : null;
+  // To try which format the bank apps accept, whatever is switched on for customers.
+  const qr = pending && s.scope.can(c.appId, "manage") ? store.accountQr.get(c.accountId) : null;
+  const tryQr = isEmvQr(qr?.payload)
+    ? { plain: await qrImage(withAmount(qr.payload, c.amount, "plain")), decimal: await qrImage(withAmount(qr.payload, c.amount, "decimal")) }
+    : null;
   const message = `Hola. ${c.description ? `Para pagar ${c.description}: ` : "Para pagar: "}${fmtMoney(c.amount)} por Bre-B, aquí están los datos: ${link}`;
   return page(s, {
     title: c.description ?? "Cobro",
@@ -1508,13 +1577,24 @@ function chargePage(s, id) {
       <div class="card">
         <h2>Enlace de pago</h2>
         <p class="muted small">${pending ? "Envíaselo a quien va a pagar: ahí ve el valor exacto, la llave Bre-B y cuándo se confirma. Esta página se actualiza sola." : "Este cobro ya no está esperando pago; el enlace muestra su estado."}</p>
+        ${linkQr ? html`<img class="qr-img mt" src="${linkQr}" alt="Código QR del enlace de pago" width="200" height="200"><p class="muted small">Para cobrar en persona: el cliente lo escanea con la cámara y abre la página de pago.</p>` : ""}
         <p>${copyable(link)}</p>
         <div class="row mt">
           ${pending ? html`<a class="btn btn-primary" href="https://wa.me/?text=${encodeURIComponent(message)}" target="_blank" rel="noopener noreferrer">${icon("send")}<span>Enviar por WhatsApp</span></a>` : ""}
           <a class="btn" href="/c/${c.id}" target="_blank" rel="noopener">Ver página de pago</a>
           ${pending && s.scope.can(c.appId, "manage") ? postButton(`/charges/${c.id}/cancel`, "Cancelar", s.session.csrf, { tone: "danger", confirm: "¿Cancelar este cobro? Su página de pago dirá que fue cancelado." }) : ""}
         </div>
-      </div>`,
+      </div>
+      ${tryQr
+        ? html`<div class="card">
+            <h2>Probar el QR con el valor (experimento)</h2>
+            <p class="muted small">Escanea cada uno con la app de tu banco desde otro dispositivo, sin confirmar todavía, y mira si muestra ${fmtMoney(c.amount)}. El que funcione lo enciendes en Configuración de la cuenta.</p>
+            <div class="qr-pair mt">
+              <figure><img class="qr-img" src="${tryQr.plain}" alt="QR de prueba con el valor sin decimales" width="200" height="200"><figcaption>Sin decimales</figcaption></figure>
+              <figure><img class="qr-img" src="${tryQr.decimal}" alt="QR de prueba con el valor con decimales" width="200" height="200"><figcaption>Con decimales</figcaption></figure>
+            </div>
+          </div>`
+        : ""}`,
   });
 }
 

@@ -94,6 +94,39 @@ if (filterForm) {
   if (pop) document.addEventListener("click", (e) => { if (pop.open && !pop.contains(e.target)) pop.open = false; });
 }
 
+// The account's Bre-B QR: sends the image as it is, with the text inside it when this browser can read it.
+const qrBox = document.querySelector("[data-qr-upload]");
+if (qrBox) {
+  const input = qrBox.querySelector("input[type=file]");
+  const error = qrBox.querySelector("[role=alert]");
+  input.addEventListener("change", async () => {
+    const file = input.files[0];
+    if (!file) return;
+    error.hidden = true;
+    let text = "";
+    try {
+      if ("BarcodeDetector" in window) {
+        const [found] = await new BarcodeDetector({ formats: ["qr_code"] }).detect(await createImageBitmap(file));
+        text = found?.rawValue ?? "";
+      }
+    } catch {}
+    try {
+      const res = await fetch(qrBox.dataset.qrUpload, {
+        method: "POST",
+        headers: { "Content-Type": file.type, "X-CSRF": qrBox.dataset.csrf, "X-QR-Payload": encodeURIComponent(text) },
+        body: await file.arrayBuffer(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "No se pudo subir la imagen.");
+      location.href = data.redirect;
+    } catch (err) {
+      error.textContent = err.message;
+      error.hidden = false;
+      input.value = "";
+    }
+  });
+}
+
 // Passkeys: the browser's WebAuthn API speaks ArrayBuffers, the server base64url.
 const toBytes = (b64) => Uint8Array.from(atob(b64.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
 const toB64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");

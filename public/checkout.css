@@ -71,3 +71,6 @@ code { font: 15px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background
 .btn:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .foot { text-align: center; color: var(--muted); font-size: 13px; margin-top: 6px; }
 .foot span { font-weight: 700; }
+.pay-qr { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
+.pay-qr h2 { align-self: flex-start; }
+.pay-qr img { display: block; width: 240px; max-width: 100%; height: auto; background: #fff; padding: 10px; border-radius: 12px; }
