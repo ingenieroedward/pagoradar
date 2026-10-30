@@ -194,6 +194,22 @@ CREATE TABLE admin_apps (
 );
 `;
 
+// v6: passkeys. `id` is the credential id; the public key isn't a secret, so it isn't encrypted.
+const V6 = `
+CREATE TABLE passkeys (
+  id TEXT PRIMARY KEY,
+  admin_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  public_key TEXT NOT NULL,
+  alg INTEGER NOT NULL,
+  sign_count INTEGER NOT NULL DEFAULT 0,
+  transports TEXT,
+  created_at TEXT NOT NULL,
+  last_used_at TEXT
+);
+CREATE INDEX passkeys_admin ON passkeys (admin_id);
+`;
+
 export const ROLES = ["admin", "client"];
 export const ACCESS_LEVELS = ["view", "manage"];
 
@@ -217,7 +233,7 @@ export function openStore(path, { masterKey } = {}) {
   db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
   db.exec(V1);
   const version = db.prepare("PRAGMA user_version").get().user_version;
-  for (const [v, sql] of [[2, V2], [3, V3], [4, V4], [5, V5]]) {
+  for (const [v, sql] of [[2, V2], [3, V3], [4, V4], [5, V5], [6, V6]]) {
     if (version >= v) continue;
     db.exec("BEGIN");
     try {
@@ -767,6 +783,7 @@ export function openStore(path, { masterKey } = {}) {
     remove(id) {
       run("DELETE FROM sessions WHERE admin_id = ?", id);
       run("DELETE FROM admin_apps WHERE admin_id = ?", id);
+      run("DELETE FROM passkeys WHERE admin_id = ?", id);
       return run("DELETE FROM admins WHERE id = ?", id).changes === 1;
     },
     setPassword: (id, passwordHash) => run("UPDATE admins SET password_hash = ?, must_change_password = 0 WHERE id = ?", passwordHash, id),
@@ -798,6 +815,31 @@ export function openStore(path, { masterKey } = {}) {
       if (!ACCESS_LEVELS.includes(level)) throw new Error(`acceso desconocido: ${level}`);
       return run("INSERT INTO admin_apps (admin_id, app_id, access) VALUES (?,?,?) ON CONFLICT(admin_id, app_id) DO UPDATE SET access = excluded.access", adminId, appId, level);
     },
+  };
+
+  // ---------- passkeys: another way in, instead of password + 2-step code
+  const toPasskey = (r) =>
+    r && {
+      id: r.id,
+      adminId: r.admin_id,
+      name: r.name,
+      publicKey: r.public_key,
+      alg: r.alg,
+      signCount: r.sign_count,
+      transports: json(r.transports, []),
+      createdAt: r.created_at,
+      lastUsedAt: r.last_used_at,
+    };
+  const passkeys = {
+    listFor: (adminId) => all("SELECT * FROM passkeys WHERE admin_id = ? ORDER BY created_at", adminId).map(toPasskey),
+    get: (id) => toPasskey(one("SELECT * FROM passkeys WHERE id = ?", id)),
+    /** False when that credential is already registered. */
+    add({ id, adminId, name, publicKey, alg, signCount, transports }) {
+      return run("INSERT OR IGNORE INTO passkeys (id, admin_id, name, public_key, alg, sign_count, transports, created_at) VALUES (?,?,?,?,?,?,?,?)", id, adminId, name, publicKey, alg, signCount, JSON.stringify(transports ?? []), now()).changes === 1;
+    },
+    recordUse: (id, signCount) => run("UPDATE passkeys SET sign_count = ?, last_used_at = ? WHERE id = ?", signCount, now(), id),
+    remove: (id, adminId) => run("DELETE FROM passkeys WHERE id = ? AND admin_id = ?", id, adminId).changes === 1,
+    removeAllFor: (adminId) => run("DELETE FROM passkeys WHERE admin_id = ?", adminId).changes,
   };
 
   const SESSION_HOURS = 12;
@@ -859,6 +901,7 @@ export function openStore(path, { masterKey } = {}) {
     inbox,
     admins,
     access,
+    passkeys,
     sessions,
     audit,
     /** Retention: rejected emails 7 days, finished deliveries 30 days, audit a year, payments `paymentDays`. */
