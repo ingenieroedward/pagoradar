@@ -45,7 +45,16 @@ export function html(strings, ...values) {
 const money = new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 });
 export const fmtMoney = (n) => money.format(n);
 const dt = new Intl.DateTimeFormat("es-CO", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit", timeZone: "America/Bogota" });
-export const fmtDate = (iso) => (iso ? dt.format(new Date(iso)) : "—");
+const ymd = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota" });
+const clock = new Intl.DateTimeFormat("es-CO", { hour: "numeric", minute: "2-digit", timeZone: "America/Bogota" });
+/** "hoy, 10:04 a. m.", "ayer, …", "mañana, …" (charges expire ahead) — or the date when it's further away. */
+export function fmtDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  const days = Math.round((Date.parse(ymd.format(d)) - Date.parse(ymd.format(new Date()))) / 86400_000);
+  const word = { 0: "hoy", [-1]: "ayer", 1: "mañana" }[days];
+  return word ? `${word}, ${clock.format(d)}` : dt.format(d);
+}
 /** "hace 5 min", "hace 3 h", "hace 2 días" — or the date when it's older than a week. */
 export function fmtAgo(iso) {
   if (!iso) return "—";
@@ -112,7 +121,7 @@ export const copyable = (value) =>
   html`<span class="copy"><code>${value}</code><button type="button" class="btn btn-small" data-copy="${value}">Copiar</button></span>`;
 
 export function flash(msg, tone = "ok") {
-  return msg ? html`<div class="flash flash-${tone}" role="status">${msg}</div>` : "";
+  return msg ? html`<div class="flash flash-${tone}" role="status"><span>${msg}</span></div>` : "";
 }
 
 // ---------- icons (inline SVG: no requests, and the CSP allows them)
@@ -156,7 +165,7 @@ const NAV = [
   ["/charges", "Cobros", "charges"],
   ["/accounts", "Cuentas", "accounts"],
   ["/apps", "Apps", "apps"],
-  ["/inbox", "Correos", "inbox"],
+  ["/inbox", "Correos rechazados", "inbox"],
   ["/settings", "Ajustes", "settings"],
 ];
 /** On a phone the first four go in the bottom bar; the rest under "Más". */
@@ -212,7 +221,7 @@ ${head}
   <nav class="side-nav">${nav.map((n) => navLink(n, active))}</nav>
   <div class="side-foot">
     <a href="/docs" target="_blank" rel="noopener">${icon("book")}<span>Documentación</span></a>
-    <a href="/me" class="who"${active === "/me" ? raw(' aria-current="page"') : ""}>${icon("user")}<span>${admin.name || admin.email}</span></a>
+    <a href="/me" class="who" title="${admin.email}"${active === "/me" ? raw(' aria-current="page"') : ""}>${icon("user")}<span>${admin.name || admin.email}</span></a>
     ${logout}
   </div>
 </aside>
@@ -229,7 +238,7 @@ ${body}
     <summary${moreActive ? raw(' aria-current="page"') : ""}>${icon("more")}<span>Más</span></summary>
     <div class="more-sheet">
       ${more.map((n) => navLink(n, active))}
-      ${client ? "" : html`<a href="/audit"${active === "/audit" ? raw(' aria-current="page"') : ""}>${icon("audit")}<span>Auditoría</span></a>`}
+      ${client ? "" : html`<a href="/audit"${active === "/audit" ? raw(' aria-current="page"') : ""}>${icon("audit")}<span>Registro de cambios</span></a>`}
       <a href="/me"${active === "/me" ? raw(' aria-current="page"') : ""}>${icon("user")}<span>Mi cuenta</span></a>
       <a href="/docs" target="_blank" rel="noopener">${icon("book")}<span>Documentación</span></a>
       ${logout}

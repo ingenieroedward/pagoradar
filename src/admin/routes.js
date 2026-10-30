@@ -453,7 +453,7 @@ function dashboard(s) {
       <div class="head"><div><h1>Inicio</h1><p class="muted">Pagos que avisaron los bancos y el estado de tus integraciones.</p></div></div>
       ${noDomain ? flash(html`Falta el dominio de recepción: agrégalo en <a href="/domains">Dominios</a> antes de crear cuentas.`, "warn") : ""}
       ${!s.scope.all && s.scope.appIds.length === 0 ? flash("Todavía no tienes apps asignadas. Pídele acceso al administrador de pagoradar.", "warn") : ""}
-      ${failed ? flash(html`Hay ${failed} entregas de webhook fallidas. <a href="/apps">Revisa tus apps</a>.`, "bad") : ""}
+      ${failed ? flash(html`${failed === 1 ? "Hay 1 entrega de webhook fallida" : `Hay ${failed} entregas de webhook fallidas`}. <a href="/apps">Revisa tus apps</a>.`, "bad") : ""}
       <div class="grid">
         <div class="stat stat-hero"><span class="stat-ico">${icon("today")}</span><span class="stat-label">Hoy</span><b>${fmtMoney(today.cents / 100)}</b><span class="stat-sub">${today.n} ${today.n === 1 ? "pago" : "pagos"}</span></div>
         <div class="stat"><span class="stat-ico">${icon("week")}</span><span class="stat-label">Últimos 7 días</span><b>${fmtMoney(week.cents / 100)}</b><span class="stat-sub">${week.n} ${week.n === 1 ? "pago" : "pagos"}</span></div>
@@ -467,18 +467,20 @@ function dashboard(s) {
   });
 }
 
-function paymentsTable(s, rows, appName) {
+/** The App and Cuenta columns only when they tell the rows apart. */
+function paymentsTable(s, rows, appName, { showAccount = true } = {}) {
   if (rows.length === 0) return html`<p class="empty">Todavía no hay pagos.</p>`;
+  const showApp = visibleApps(s).length > 1 && showAccount;
   const accountName = Object.fromEntries(visibleAccounts(s).map((a) => [a.id, a.name]));
   return html`<div class="table-wrap"><table>
-    <thead><tr><th>Fecha</th><th>Pagador</th><th>Banco</th><th>Cuenta</th><th>App</th><th>Cobro</th><th class="num">Valor</th></tr></thead>
+    <thead><tr><th>Fecha</th><th>Pagador</th><th>Banco</th>${showAccount ? html`<th>Cuenta</th>` : ""}${showApp ? html`<th>App</th>` : ""}<th>Cobro</th><th class="num">Valor</th></tr></thead>
     <tbody>${rows.map(
       (p) => html`<tr>
         <td class="t-date">${fmtDate(p.paidAt)}</td>
         <td class="t-main"><b>${p.payerName}</b>${p.payerBank ? html`<div class="muted small">desde ${p.payerBank}</div>` : ""}</td>
         <td>${BANK_LABEL[p.bank] ?? p.bank}${p.reference ? html`<div class="muted small">Ref. ${p.reference}</div>` : ""}</td>
-        <td>${p.accountId ? html`<a class="quiet" href="/accounts/${p.accountId}">${accountName[p.accountId] ?? p.accountId}</a>` : "—"}</td>
-        <td>${appName[p.appId] ?? p.appId}</td>
+        ${showAccount ? html`<td>${p.accountId ? html`<a class="quiet" href="/accounts/${p.accountId}">${accountName[p.accountId] ?? p.accountId}</a>` : "—"}</td>` : ""}
+        ${showApp ? html`<td>${appName[p.appId] ?? p.appId}</td>` : ""}
         <td class="t-wide">${chargeCell(s, p)}</td>
         <td class="num"><b>${fmtMoney(p.amount)}</b></td>
       </tr>`,
@@ -530,7 +532,7 @@ function linkPaymentPage(s, id, { error = null } = {}) {
           ? html`<p>Este pago ya está asociado a un cobro (${linked.description ?? linked.reference ?? linked.id}).</p>`
           : options.length === 0
             ? html`<p class="empty">No hay cobros abiertos o recientes en esta cuenta.</p>`
-            : html`<p class="muted small">Cobros abiertos, o vencidos/cancelados en los últimos 7 días, del más parecido en valor al menos parecido. La app recibe charge.paid.</p>
+            : html`<p class="muted small">Cobros abiertos, o vencidos/cancelados en los últimos 7 días, del más parecido en valor al menos parecido. Se le avisa a la app.</p>
           <div class="table-wrap"><table>
             <thead><tr><th>Creado</th><th>Cobro</th><th>Estado</th><th class="num">Valor</th><th></th></tr></thead>
             <tbody>${options.map((c, i) => html`<tr${i === 0 ? raw(' class="row-best"') : ""}>
@@ -588,7 +590,7 @@ function appsPage(s, error = null) {
             return html`<a class="tile" href="/apps/${a.id}">
               <div class="tile-top"><span class="tile-ico">${icon("apps")}</span><div class="tile-title"><b>${a.name}</b><span>${a.id}</span></div>${a.active ? badge("Activa", "ok") : badge("Inactiva", "muted")}</div>
               <p class="tile-line">${icon("webhook")}<span>${a.webhookUrl ? host(a.webhookUrl) : "Sin webhook"}</span></p>
-              <div class="tile-foot"><span>${accounts.length} ${accounts.length === 1 ? "cuenta" : "cuentas"}</span><span>${keys} API ${keys === 1 ? "key" : "keys"}</span>${failed ? badge(`${failed} entregas fallidas`, "bad") : ""}</div>
+              <div class="tile-foot"><span>${accounts.length} ${accounts.length === 1 ? "cuenta" : "cuentas"}</span><span>${keys} API ${keys === 1 ? "key" : "keys"}</span>${failed ? badge(failed === 1 ? "1 entrega fallida" : `${failed} entregas fallidas`, "bad") : ""}</div>
             </a>`;
           })}</div>`}
       ${s.scope.all ? html`<div class="card">
@@ -636,7 +638,7 @@ function appPage(s, id, { error = null, newKey = null, secretShown = null } = {}
       <div class="grid grid-3">
         <a class="stat" href="#cuentas"><span class="stat-ico">${icon("accounts")}</span><span class="stat-label">Cuentas receptoras</span><b>${accounts.length}</b></a>
         <div class="stat"><span class="stat-ico">${icon("send")}</span><span class="stat-label">Entregas recientes</span><b>${delivered}</b><span class="stat-sub">${deliveries.length ? `de las últimas ${deliveries.length} llegaron` : "aún no hay entregas"}</span></div>
-        <div class="stat${failed ? " stat-warn" : ""}"><span class="stat-ico">${icon("alert")}</span><span class="stat-label">Fallidas</span><b>${failed}</b><span class="stat-sub">${failed ? "revisa la URL y reintenta" : "todo bien"}</span></div>
+        <div class="stat${failed ? " stat-warn" : ""}"><span class="stat-ico">${icon("alert")}</span><span class="stat-label">Fallidas</span><b>${failed}</b><span class="stat-sub">${failed ? (manage ? "revisa la URL y reintenta" : "no llegaron a la app") : "todo bien"}</span></div>
       </div>
       ${manage ? html`<div class="card">
         <form method="post" action="/apps/${id}">
@@ -678,7 +680,7 @@ function appPage(s, id, { error = null, newKey = null, secretShown = null } = {}
               <td class="t-main">${d.type ?? ""}<div class="muted small">${d.event_id}</div></td>
               <td>${d.status === "delivered" ? badge("Entregado", "ok") : d.status === "failed" ? badge("Fallido", "bad") : badge("Pendiente", "warn")}</td>
               <td>${d.attempts} ${d.attempts === 1 ? "intento" : "intentos"}</td>
-              <td class="t-wide">${d.last_status ? `HTTP ${d.last_status}` : ""}${d.last_error ? html`<div class="muted small">${d.last_error}</div>` : ""}${d.status === "pending" && d.attempts ? html`<div class="muted small">Próximo: ${fmtDate(d.next_attempt_at)}</div>` : ""}</td>
+              <td class="t-wide">${d.last_status ? `HTTP ${d.last_status}` : ""}${d.last_error && d.last_error !== `HTTP ${d.last_status}` ? html`<div class="muted small">${d.last_error}</div>` : ""}${d.status === "pending" && d.attempts ? html`<div class="muted small">Próximo: ${fmtDate(d.next_attempt_at)}</div>` : ""}</td>
               <td class="t-act">${manage && d.status !== "delivered" ? postButton(`/deliveries/${d.id}/retry`, "Reintentar", csrf, { small: true, fields: { back: `/apps/${id}` } }) : ""}</td>
             </tr>`)}</tbody></table></div>`}
       </div>`,
@@ -742,7 +744,7 @@ async function retryDelivery(s, id) {
 function accountCards(accounts, appName) {
   if (accounts.length === 0) return html`<div class="card"><p class="empty">Sin cuentas receptoras.</p></div>`;
   return html`<div class="tiles">${accounts.map((a) => html`<a class="tile${a.status === "disabled" ? " tile-off" : ""}" href="/accounts/${a.id}">
-    <div class="tile-top"><span class="tile-ico">${icon("accounts")}</span><div class="tile-title"><b>${a.name}</b><span>${appName[a.appId] ?? a.appId}${a.tenantRef ? ` · cliente ${a.tenantRef}` : ""}</span></div></div>
+    <div class="tile-top"><span class="tile-ico">${icon("accounts")}</span><div class="tile-title"><b>${a.name}</b><span>${appName[a.appId] ?? a.appId}${a.tenantRef ? ` · ref. ${a.tenantRef}` : ""}</span></div></div>
     <p class="tile-line">${icon("inbox")}<code>${a.address}</code></p>
     <span class="bank-tags">${a.banks.map((b) => html`<span>${BANK_LABEL[b] ?? b}</span>`)}</span>
     <div class="tile-foot">${accountStatus(a.status)}<span>${a.lastPaymentAt ? `Último pago ${fmtAgo(a.lastPaymentAt)}` : "Sin pagos aún"}</span></div>
@@ -768,7 +770,7 @@ function accountsPage(s) {
       ${msg(s)}
       ${filterBar(s, {
         rows: [
-          html`${searchBox("q", "Buscar nombre, dirección, correo o cliente", q.get("q"))}
+          html`${searchBox("q", "Buscar nombre, dirección, correo o referencia", q.get("q"))}
             ${apps.length > 1 ? html`<div class="pills">${pillSelect("app", "App", "Todas las apps", apps.map((a) => [a.id, a.name]), q.get("app"))}</div>` : ""}
             ${status ? html`<input type="hidden" name="status" value="${status}">` : ""}`,
           segmented("Estado", [
@@ -817,7 +819,7 @@ function newAccountPage(s, { error = null, values = {} } = {}) {
           ${domains.length > 1
             ? html`<label>Dominio de la dirección <span class="hint">Dónde recibe esta cuenta: <code>algo@dominio</code>.</span><select name="domain">${domains.map(([v, l]) => html`<option value="${v}"${v === values.domain ? raw(" selected") : ""}>${l}</option>`)}</select></label>`
             : ""}
-          <label>Id del cliente en tu app <span class="hint">Opcional: a quién pertenece en tu app (ej. el id de la organización). Llega en cada aviso.</span><input type="text" name="tenantRef" maxlength="120" value="${values.tenantRef ?? ""}" placeholder="org_42"></label>`)}
+          <label>Referencia externa <span class="hint">Opcional: a quién corresponde en tu app (ej. el id de la organización). Llega en cada aviso.</span><input type="text" name="tenantRef" maxlength="120" value="${values.tenantRef ?? ""}" placeholder="org_42"></label>`)}
         ${section("Avisos del banco", "Solo se aceptan avisos dirigidos a estos correos y firmados por estos bancos.", html`
           <label>Correos donde el banco avisa <span class="hint">El Gmail del dueño de la cuenta, uno por línea.</span><textarea name="ownerEmails" required rows="2" placeholder="dueno@gmail.com">${values.ownerEmails ?? ""}</textarea></label>
           <div class="field"><span class="field-label">Bancos</span>${bankChecks(values.banks ?? BANK_IDS)}</div>`)}
@@ -868,13 +870,26 @@ function accountPage(s, id, { error = null } = {}) {
   const recent = store.payments.search({ accountId: id, limit: 10 }).rows;
   const rejected = store.inbox.list({ accountId: id, limit: 10 });
   const waiting = a.status === "pending";
+  const gmailSteps = html`<ol class="steps">
+    <li>Gmail → ⚙️ <b>Ver toda la configuración</b> → <b>Reenvío y correo POP/IMAP</b> → <b>Agregar una dirección de reenvío</b>: ${copyable(a.address)}</li>
+    <li>Gmail manda un código de confirmación a esa dirección; aparece aquí:
+      ${a.confirmationCode || a.confirmationLink
+        ? html`<div class="secret mt">${a.confirmationCode ? html`<p>Código: <b class="big">${a.confirmationCode}</b> <button type="button" class="btn btn-small" data-copy="${a.confirmationCode}">Copiar</button></p>` : ""}${a.confirmationLink ? html`<p class="small">O abre este enlace con la sesión de Gmail iniciada: <a href="${a.confirmationLink}" target="_blank" rel="noopener noreferrer">confirmar reenvío</a></p>` : ""}<p class="muted small">Recibido ${fmtDate(a.confirmationAt)}</p></div>`
+        : html`<p class="muted">Esperando el correo de Gmail… (la página se actualiza sola)</p>`}
+      <p class="small muted">Deja marcado "Inhabilitar reenvío": solo se reenvía con el filtro del siguiente paso.</p>
+    </li>
+    <li>Crea un filtro: en <b>De</b> pega ${copyable(senders)} → <b>Crear filtro</b> → <b>Reenviarlo a</b> la dirección de arriba.</li>
+    <li>${a.status === "active"
+      ? html`${badge("Listo", "ok")} Recibiendo avisos (último: ${fmtDate(a.lastEmailAt)}).`
+      : html`Haz un pago pequeño de prueba: cuando llegue el primer aviso válido, la cuenta pasa a <b>Activa</b>.`}</li>
+  </ol>`;
   return page(s, {
     title: a.name,
     active: "/accounts",
     status: error ? 400 : 200,
     body: html`
       ${waiting ? raw('<span data-autorefresh="15" hidden></span>') : ""}
-      <div class="head"><a class="back" href="/accounts">← Cuentas</a><div><h1>${a.name} ${accountStatus(a.status)}</h1><p class="muted">${app ? html`App <a href="/apps/${app.id}">${app.name}</a>` : a.appId}${a.tenantRef ? ` · cliente ${a.tenantRef}` : ""}</p></div></div>
+      <div class="head"><a class="back" href="/accounts">← Cuentas</a><div><h1>${a.name} ${accountStatus(a.status)}</h1><p class="muted">${app ? html`App <a href="/apps/${app.id}">${app.name}</a>` : a.appId}${a.tenantRef ? ` · ref. ${a.tenantRef}` : ""}</p></div></div>
       ${msg(s)}${flash(error, "bad")}
       <div class="card">
         <div class="addr">
@@ -882,41 +897,14 @@ function accountPage(s, id, { error = null } = {}) {
           ${copyable(a.address)}
         </div>
         ${a.status === "active"
-          ? html`<details class="setup"><summary>${badge("Conectada", "ok")} Recibiendo avisos · último ${fmtAgo(a.lastEmailAt)} <span class="muted small">· ver pasos de configuración</span></summary>
-        <ol class="steps">
-          <li>Gmail → ⚙️ <b>Ver toda la configuración</b> → <b>Reenvío y correo POP/IMAP</b> → <b>Agregar una dirección de reenvío</b>: ${copyable(a.address)}</li>
-          <li>Gmail manda un código de confirmación a esa dirección; aparece aquí:
-            ${a.confirmationCode || a.confirmationLink
-              ? html`<div class="secret mt">${a.confirmationCode ? html`<p>Código: <b class="big">${a.confirmationCode}</b></p>` : ""}${a.confirmationLink ? html`<p class="small">O abre este enlace con la sesión de Gmail iniciada: <a href="${a.confirmationLink}" target="_blank" rel="noopener noreferrer">confirmar reenvío</a></p>` : ""}<p class="muted small">Recibido ${fmtDate(a.confirmationAt)}</p></div>`
-              : html`<p class="muted">Esperando el correo de Gmail… (la página se actualiza sola)</p>`}
-            <p class="small muted">Deja marcado "Inhabilitar reenvío": solo se reenvía con el filtro del siguiente paso.</p>
-          </li>
-          <li>Crea un filtro: en <b>De</b> pega ${copyable(senders)} → <b>Crear filtro</b> → <b>Reenviarlo a</b> la dirección de arriba.</li>
-          <li>${a.status === "active"
-            ? html`${badge("Listo", "ok")} Recibiendo avisos (último: ${fmtDate(a.lastEmailAt)}).`
-            : html`Haz un pago pequeño de prueba: cuando llegue el primer aviso válido, la cuenta pasa a <b>Activa</b>.`}</li>
-        </ol>
-        </details>`
-          : html`<h2 class="mt">Configurar el Gmail del dueño</h2>
-        <ol class="steps">
-          <li>Gmail → ⚙️ <b>Ver toda la configuración</b> → <b>Reenvío y correo POP/IMAP</b> → <b>Agregar una dirección de reenvío</b>: ${copyable(a.address)}</li>
-          <li>Gmail manda un código de confirmación a esa dirección; aparece aquí:
-            ${a.confirmationCode || a.confirmationLink
-              ? html`<div class="secret mt">${a.confirmationCode ? html`<p>Código: <b class="big">${a.confirmationCode}</b></p>` : ""}${a.confirmationLink ? html`<p class="small">O abre este enlace con la sesión de Gmail iniciada: <a href="${a.confirmationLink}" target="_blank" rel="noopener noreferrer">confirmar reenvío</a></p>` : ""}<p class="muted small">Recibido ${fmtDate(a.confirmationAt)}</p></div>`
-              : html`<p class="muted">Esperando el correo de Gmail… (la página se actualiza sola)</p>`}
-            <p class="small muted">Deja marcado "Inhabilitar reenvío": solo se reenvía con el filtro del siguiente paso.</p>
-          </li>
-          <li>Crea un filtro: en <b>De</b> pega ${copyable(senders)} → <b>Crear filtro</b> → <b>Reenviarlo a</b> la dirección de arriba.</li>
-          <li>${a.status === "active"
-            ? html`${badge("Listo", "ok")} Recibiendo avisos (último: ${fmtDate(a.lastEmailAt)}).`
-            : html`Haz un pago pequeño de prueba: cuando llegue el primer aviso válido, la cuenta pasa a <b>Activa</b>.`}</li>
-        </ol>`}
+          ? html`<details class="setup"><summary>${badge("Conectada", "ok")} Recibiendo avisos · último ${fmtAgo(a.lastEmailAt)} <span class="muted small">· ver pasos de configuración</span></summary>${gmailSteps}</details>`
+          : html`<h2 class="mt">Configurar el Gmail del dueño</h2>${gmailSteps}`}
       </div>
       ${manage ? html`<form method="post" action="/accounts/${id}" class="card">
         ${csrfField(csrf)}
-        ${section("La cuenta", "Cómo la reconoces y a qué cliente de tu app pertenece.", html`
+        ${section("La cuenta", "Cómo la reconoces y a quién corresponde en tu app.", html`
           <label>Nombre <input type="text" name="name" value="${a.name}" required maxlength="60"></label>
-          <label>Id del cliente en tu app <span class="hint">Opcional. Llega en cada aviso como <code>tenantRef</code>.</span><input type="text" name="tenantRef" value="${a.tenantRef ?? ""}" maxlength="120"></label>`)}
+          <label>Referencia externa <span class="hint">Opcional: a quién corresponde en tu app. Llega en cada aviso como <code>tenantRef</code>.</span><input type="text" name="tenantRef" value="${a.tenantRef ?? ""}" maxlength="120"></label>`)}
         ${section("Avisos del banco", "Solo se aceptan avisos dirigidos a estos correos y firmados por estos bancos.", html`
           <label>Correos donde el banco avisa <span class="hint">Uno por línea.</span><textarea name="ownerEmails" required rows="2">${a.ownerEmails.join("\n")}</textarea></label>
           <div class="field"><span class="field-label">Bancos</span>${bankChecks(a.banks)}</div>`)}
@@ -945,7 +933,7 @@ function accountPage(s, id, { error = null } = {}) {
           </div>
         </div>
       </div>` : ""}
-      <div class="card"><h2>Últimos pagos</h2>${paymentsTable(s, recent, app ? { [app.id]: app.name } : {})}</div>
+      <div class="card"><h2>Últimos pagos</h2>${paymentsTable(s, recent, app ? { [app.id]: app.name } : {}, { showAccount: false })}</div>
       <div class="card"><h2>Correos rechazados</h2>${inboxTable(rejected)}</div>`,
   });
 }
@@ -1153,11 +1141,11 @@ function chargesPage(s) {
     title: "Cobros",
     active: "/charges",
     body: html`
-      <div class="head"><div><h1>Cobros</h1><p class="muted">Las apps los crean por API (POST /v1/charges); cada uno tiene un valor único y su página de pago.</p></div></div>
+      <div class="head"><div><h1>Cobros</h1><p class="muted">Cada cobro tiene un valor único y su propia página de pago. Las apps los crean por API.</p></div></div>
       ${msg(s)}
       ${filterBar(s, {
         rows: [
-          html`${searchBox("q", "Buscar descripción, referencia o cliente", q.get("q"))}
+          html`${searchBox("q", "Buscar descripción, referencia o pagador", q.get("q"))}
             <div class="pills">
               ${apps.length > 1 ? pillSelect("app", "App", "Todas las apps", apps.map((a) => [a.id, a.name]), q.get("app")) : ""}
               ${pillSelect("account", "Cuenta", "Todas las cuentas", accounts.map((a) => [a.id, a.name]), q.get("account"))}
@@ -1175,7 +1163,7 @@ function chargesPage(s) {
             const payment = c.paymentId ? store.payments.get(c.paymentId) : null;
             return html`<tr>
               <td class="t-date">${fmtDate(c.createdAt)}<div class="muted small">vence ${fmtDate(c.expiresAt)}</div></td>
-              <td class="t-main"><b>${c.description ?? "—"}</b>${c.reference ? html`<div class="muted small">Ref. ${c.reference}</div>` : ""}<div class="muted small">${appName[c.appId] ?? c.appId}</div></td>
+              <td class="t-main"><b>${c.description ?? "—"}</b>${c.reference ? html`<div class="muted small">Ref. ${c.reference}</div>` : ""}${apps.length > 1 ? html`<div class="muted small">${appName[c.appId] ?? c.appId}</div>` : ""}</td>
               <td><a class="quiet" href="/accounts/${c.accountId}">${accountName[c.accountId] ?? c.accountId}</a></td>
               <td>${chargeStatus(c.status)}${payment ? html`<div class="muted small">${payment.payerName} · ${fmtDate(payment.paidAt)}</div>` : ""}</td>
               <td class="num"><b>${fmtMoney(c.amount)}</b>${c.amount !== c.baseAmount ? html`<div class="muted small">pedido ${fmtMoney(c.baseAmount)}</div>` : ""}</td>
@@ -1318,19 +1306,19 @@ function personPage(s, id, { error = null, tempPassword = null } = {}) {
     active: "/settings",
     status: error ? 400 : 200,
     body: html`
-      <div class="head"><a class="back" href="/settings">← Ajustes</a><div><h1>${person.name || person.email}</h1><p class="muted">${person.email}</p></div></div>
+      <div class="head"><a class="back" href="/settings">← Ajustes</a><div><h1>${person.name || person.email}</h1>${person.name ? html`<p class="muted">${person.email}</p>` : ""}</div></div>
       ${msg(s)}${flash(error, "bad")}
       ${tempPassword ? html`<div class="secret card"><h2>Contraseña temporal</h2><p>Dásela a la persona por un canal seguro; tendrá que cambiarla y configurar su código de 2 pasos al entrar. <b>No se volverá a mostrar.</b></p><p>${copyable(tempPassword)}</p></div>` : ""}
       <form method="post" action="/settings/admins/${id}" class="card">
         ${csrfField(s.session.csrf)}
         ${section("Rol", self ? "No puedes cambiar tu propio rol." : "Un administrador ve y cambia todo, también los ajustes y las demás personas.", html`
           <div class="checks">${Object.entries(ROLE_LABEL).map(([v, l]) => html`<label><input type="radio" name="role" value="${v}"${person.role === v ? raw(" checked") : ""}${self ? raw(" disabled") : ""}> ${l}</label>`)}</div>`)}
-        ${section("Apps del cliente", "Solo cuenta si el rol es Cliente. Ver: pagos, cobros, cuentas y CSV. Gestionar: además crear y editar cuentas, webhook, API keys, cancelar cobros y asociar pagos.", apps.length
+        <div class="client-only">${section("Apps del cliente", "Ver: pagos, cobros, cuentas y CSV. Gestionar: además crear y editar cuentas, webhook, API keys, cancelar cobros y asociar pagos.", apps.length
           ? html`${apps.map((a) => html`<label>${a.name} <select name="access_${a.id}">
               <option value="">Sin acceso</option>
               ${ACCESS_LEVELS.map((level) => html`<option value="${level}"${grants[a.id] === level ? raw(" selected") : ""}>${level === "view" ? "Ver" : "Gestionar"}</option>`)}
             </select></label>`)}`
-          : html`<p class="muted small">Aún no hay apps.</p>`)}
+          : html`<p class="muted small">Aún no hay apps.</p>`)}</div>
         <div class="form-actions"><button class="btn btn-primary" type="submit">Guardar permisos</button></div>
       </form>`,
   });
@@ -1370,7 +1358,7 @@ function cfSelect(s, current, newName = "") {
       ${accounts.map((a) => html`<option value="${a.id}"${current === a.id ? raw(" selected") : ""}>${a.name}</option>`)}
       <option value="new"${current === "new" ? raw(" selected") : ""}>Otra cuenta (de un cliente)…</option>
     </select></label>
-    <label>Nombre de la otra cuenta <span class="hint">Solo si elegiste "Otra cuenta". Ej. "Cloudflare de Ana".</span><input type="text" name="cfName" maxlength="60" value="${newName}" placeholder="Cloudflare de Ana"></label>`;
+    <label class="cf-new">Nombre de la otra cuenta <span class="hint">Ej. "Cloudflare de Ana".</span><input type="text" name="cfName" maxlength="60" value="${newName}" placeholder="Cloudflare de Ana"></label>`;
 }
 
 /** The Cloudflare account chosen in cfSelect: { cfAccountId } (null = yours), { newName } or { error }. */
@@ -1454,8 +1442,8 @@ function domainPage(s, name, { error = null, secretShown = null } = {}) {
             ? workerUp && workerUp.name !== d.name
               ? html`${badge("Ya está", "ok")} El Worker de ${cf.name} ya recibe correos (de ${workerUp.name}): no hay que hacer nada aquí. <details><summary class="small">Ver cómo se configuró</summary><div class="mt">${workerSteps}</div></details>`
               : html`<b>Solo la primera vez en ${cf.name}</b>: ${workerSteps}${siblings.length ? html`<p class="small muted">Este mismo Worker sirve para sus otros dominios: ${siblings.map((x) => x.name).join(", ")}.</p>` : ""}`
-            : html`Usa el Worker <code>pagoradar-email</code> que ya tienes en tu cuenta: no hay que crear otro. <details><summary class="small">¿Aún no lo tienes?</summary><div class="mt">${workerSteps}</div></details>`}</li>
-          <li><b>Email Routing → Routing rules → Catch-all address</b> de ${d.name} → acción <b>Send to a Worker</b> → <code>pagoradar-email</code>.</li>
+            : html`Usa el Worker <code class="nb">pagoradar-email</code> que ya tienes en tu cuenta: no hay que crear otro. <details><summary class="small">¿Aún no lo tienes?</summary><div class="mt">${workerSteps}</div></details>`}</li>
+          <li><b>Email Routing → Routing rules → Catch-all address</b> de ${d.name} → acción <b>Send to a Worker</b> → <code class="nb">pagoradar-email</code>.</li>
           <li>${d.lastEmailAt ? html`${badge("Listo", "ok")} Llegan correos (último: ${fmtDate(d.lastEmailAt)}).` : html`Crea una cuenta en este dominio y agrega su dirección en Gmail: el correo de confirmación de Gmail debe aparecer en la cuenta.`}</li>
         </ol>
       </div>
@@ -1467,7 +1455,7 @@ function domainPage(s, name, { error = null, secretShown = null } = {}) {
             <label><input type="radio" name="scope" value="all"${d.appIds ? "" : raw(" checked")}> Todas las apps</label>
             <label><input type="radio" name="scope" value="some"${d.appIds ? raw(" checked") : ""}> Solo estas:</label>
           </div>
-          <div class="checks">${apps.map((a) => html`<label><input type="checkbox" name="apps" value="${a.id}"${d.appIds?.includes(a.id) ? raw(" checked") : ""}> ${a.name}</label>`)}</div>`)}
+          <div class="checks scope-apps">${apps.map((a) => html`<label><input type="checkbox" name="apps" value="${a.id}"${d.appIds?.includes(a.id) ? raw(" checked") : ""}> ${a.name}</label>`)}</div>`)}
         <div class="form-actions"><button class="btn btn-primary" type="submit">Guardar</button></div>
       </form>
       <div class="card danger-zone">

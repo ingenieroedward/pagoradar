@@ -58,7 +58,7 @@ a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; text-underline-offset: 3px; }
 a.quiet { color: inherit; }
 a.quiet:hover { color: var(--accent); }
-code { font: 12.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel-2); border: 1px solid var(--line); padding: 2px 7px; border-radius: 7px; word-break: break-all; }
+code { font: 12.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel-2); border: 1px solid var(--line); padding: 2px 7px; border-radius: 7px; overflow-wrap: anywhere; }
 h1 { font-size: 24px; line-height: 1.2; margin: 0 0 4px; letter-spacing: -.02em; }
 h2 { font-size: 16px; margin: 0 0 12px; letter-spacing: -.01em; }
 p { margin: 6px 0; }
@@ -109,8 +109,9 @@ main.wide { max-width: 1120px; padding-bottom: calc(96px + env(safe-area-inset-b
   .side-nav a, .side-foot a, .side-foot .linkish { display: flex; align-items: center; gap: 11px; padding: 9px 10px; border-radius: 10px; color: var(--muted); font-weight: 600; font-size: 14.5px; width: 100%; }
   .side-nav a:hover, .side-foot a:hover, .side-foot .linkish:hover { background: var(--hover); color: var(--text); text-decoration: none; }
   .side-nav a[aria-current="page"], .side-foot a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
-  .side-foot { margin-top: auto; display: grid; gap: 2px; border-top: 1px solid var(--line); padding-top: 12px; }
-  .side-foot .who span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* minmax(0, …) and min-width: 0 let a long email shrink to an ellipsis instead of widening the column. */
+  .side-foot { margin-top: auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; border-top: 1px solid var(--line); padding-top: 12px; }
+  .side-foot .who span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   main.wide { padding: 32px 36px 64px; width: 100%; }
 }
 
@@ -192,7 +193,7 @@ tr.row-best td { background: color-mix(in srgb, var(--accent) 5%, transparent); 
 .list li + li { border-top: 1px solid var(--line); }
 .list-ico { display: grid; place-items: center; width: 34px; height: 34px; flex: none; border-radius: 10px; background: var(--panel-2); color: var(--muted); }
 .list-ico .ico { width: 17px; height: 17px; }
-.list-main { flex: 1 1 200px; min-width: 0; display: grid; }
+.list-main { flex: 1 1 200px; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); overflow-wrap: anywhere; }
 .list-main > span { color: var(--muted); font-size: 12.5px; }
 
 /* ---------- tables (a list of cards on a phone) */
@@ -204,6 +205,7 @@ tbody tr:hover td { background: var(--hover); }
 td.num, th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 td.num b { font-size: 15px; }
 td.t-date { color: var(--muted); white-space: nowrap; font-size: 13px; }
+td.t-main { min-width: 170px; }
 tr:last-child td { border-bottom: 0; }
 td code { white-space: nowrap; word-break: normal; }
 td .row { flex-wrap: nowrap; }
@@ -239,6 +241,7 @@ label > .hint { order: 2; font-weight: 400; color: var(--muted); font-size: 12.5
 .field-label { font-weight: 600; font-size: 14px; }
 .field .checks { margin-top: 0; }
 .checks label > input { order: 0; }
+code.nb { white-space: nowrap; }
 .fset-head code { word-break: normal; white-space: nowrap; font-size: 12px; }
 .field-pair { display: grid; gap: 14px; }
 @media (min-width: 640px) { .field-pair { grid-template-columns: 1fr 1fr; } }
@@ -246,7 +249,7 @@ label > .hint { order: 2; font-weight: 400; color: var(--muted); font-size: 12.5
 
 /* A form section: title and explanation on the left, fields on the right (stacked on a phone). */
 .fset { display: grid; gap: 14px; padding: 4px 0 22px; }
-.fset + .fset { border-top: 1px solid var(--line); padding-top: 22px; }
+.fset + .fset, .fset + .client-only > .fset { border-top: 1px solid var(--line); padding-top: 22px; }
 .fset-head h3 { margin: 0 0 4px; font-size: 15px; letter-spacing: -.01em; }
 .fset-head p { margin: 0; color: var(--muted); font-size: 13px; max-width: 46ch; }
 .fset-body { display: grid; gap: 16px; min-width: 0; align-content: start; }
@@ -282,7 +285,11 @@ input[type=text], input[type=email], input[type=password], input[type=url], inpu
 }
 textarea { min-height: 84px; resize: vertical; }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
+input[type=checkbox], input[type=radio] { width: 18px; height: 18px; accent-color: var(--accent); }
+/* Only what applies to the current choice (still all there, and usable, without :has). */
+form:has(select[name="cf"] option[value="new"]:not(:checked)) .cf-new { display: none; }
+form:has(input[name="scope"][value="all"]:checked) .scope-apps { display: none; }
+form:has(input[name="role"][value="admin"]:checked) .client-only { display: none; }
 .checks { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .checks label { display: inline-flex; align-items: center; gap: 8px; font-weight: 500; padding: 8px 12px; border: 1px solid var(--line-2); border-radius: 999px; cursor: pointer; }
 .checks label:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }

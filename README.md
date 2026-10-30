@@ -116,7 +116,7 @@ la variable se puede borrar (se ignora).
 |---|---|
 | **Inicio** | Lo recibido hoy y en 7 días, cuentas esperando, entregas fallidas, últimos pagos |
 | **Apps** | Cada proyecto (Ibirifas, otro SaaS…): URL del webhook, secreto para verificar la firma (mostrar / cambiar), **evento de prueba**, **API keys** (se muestran una sola vez y se pueden revocar), sus cuentas y el historial de **entregas** con **Reintentar** |
-| **Cuentas** | Cada cuenta bancaria que reenvía sus avisos: dirección generada sola, correos dueños, bancos, "id del cliente en tu app", **guía paso a paso** para el Gmail del dueño con el **código de confirmación de Gmail** en pantalla, estado (*Esperando primer aviso* → *Activa*), **probar un aviso (.eml)**, desactivar |
+| **Cuentas** | Cada cuenta bancaria que reenvía sus avisos: dirección generada sola, correos dueños, bancos, "referencia externa" (`tenantRef`), **guía paso a paso** para el Gmail del dueño con el **código de confirmación de Gmail** en pantalla, estado (*Esperando primer aviso* → *Activa*), **probar un aviso (.eml)**, desactivar |
 | **Pagos** | Buscar por app, cuenta, banco, pagador o referencia y fechas; descargar CSV |
 | **Correos** | Lo que llegó y no contó como pago, con el motivo (7 días) |
 | **Ajustes** | **Dominios de recepción** (cada uno con su guía de Cloudflare y el secreto de su Worker), días que se guardan los pagos, **personas con acceso** (administradores y clientes), registro de cambios |

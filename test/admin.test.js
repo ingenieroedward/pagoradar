@@ -188,6 +188,7 @@ test("receiving accounts: generated address, setup guide, Gmail code and first n
   await send(await gmailConfirmationEmail({ subject: "(#112233445) Confirmación de reenvío de Gmail", text: "Para confirmar...", to: account.address }));
   r = await b.req(`/accounts/${accountId}`);
   assert.match(r.text, /112233445/, "the Gmail code appears on the account page");
+  assert.match(r.text, /data-copy="112233445"/, "with a button to copy it");
   await send(await nequiNegociosEmail({ tx: "panel-1" }));
   assert.equal(store.accounts.get(accountId).status, "active");
   r = await b.req(`/accounts/${accountId}`);
