@@ -9,6 +9,9 @@ export interface Account {
   banks: Bank[];
   tenantRef: string | null;
   status: "pending" | "active" | "disabled";
+  /** Active, but no valid notice in more than silentAfterHours. */
+  silent: boolean;
+  silentAfterHours: number;
   confirmationCode: string | null;
   confirmationLink: string | null;
   confirmationAt: string | null;
@@ -27,6 +30,8 @@ export interface AccountFields {
   tenantRef?: string | null;
   payKey?: string | null;
   payHolder?: string | null;
+  /** Hours without a valid notice before account.silent; 0 = never. */
+  silentAfterHours?: number;
   active?: boolean;
 }
 
@@ -105,7 +110,8 @@ export type PagoradarEvent =
   | { id: string; type: "charge.paid"; createdAt: string; source: string; data: Charge & { payment: Payment; late: boolean; manual?: boolean } }
   | { id: string; type: "charge.expired"; createdAt: string; source: string; data: Charge }
   | { id: string; type: "account.confirmation_code"; createdAt: string; source: string; data: { account: { id: string; name: string; tenantRef: string | null; address: string }; code: string | null; link: string | null } }
-  | { id: string; type: "account.activated"; createdAt: string; source: string; data: { account: { id: string; name: string; tenantRef: string | null; address: string } } };
+  | { id: string; type: "account.activated"; createdAt: string; source: string; data: { account: { id: string; name: string; tenantRef: string | null; address: string } } }
+  | { id: string; type: "account.silent"; createdAt: string; source: string; data: { account: { id: string; name: string; tenantRef: string | null; address: string }; lastEmailAt: string; silentAfterHours: number } };
 
 export class PagoradarError extends Error {
   status: number | null;

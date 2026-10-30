@@ -145,6 +145,8 @@ Content-Type: application/json</code></pre>
       <tr><td><code>payKey</code>, <code>payHolder</code> <span class="type">texto · null</span></td><td>Llave Bre-B y titular que ven los clientes en la página de pago (hasta 80).</td></tr>
       <tr><td><code>setup.forwardTo</code>, <code>setup.gmailFilterFrom</code></td><td>Lo que tu app muestra en la guía: la dirección y el texto del filtro de Gmail (remitentes del banco).</td></tr>
       <tr><td><code>lastEmailAt</code>, <code>lastPaymentAt</code>, <code>createdAt</code></td><td>Fechas ISO o null.</td></tr>
+      <tr><td><code>silentAfterHours</code> <span class="type">entero</span></td><td>Horas sin avisos válidos antes de alertar (0 = nunca, hasta 8.760). Por defecto 168 (7 días).</td></tr>
+      <tr><td><code>silent</code> <span class="type">booleano</span></td><td>La cuenta está activa pero pasó ese plazo sin avisos.</td></tr>
     </tbody>
   </table>
 
@@ -185,7 +187,7 @@ Content-Type: application/json</code></pre>
 <pre class="response"><code>{ "domains": [{ "name": "pagos.tudominio.com", "default": true }, { "name": "pagos.cliente.com", "default": false }] }</code></pre>
   <div class="endpoint"><span class="method get">GET</span><code>/v1/accounts?tenantRef=org_42</code><span>Listar (de la app o de un cliente)</span></div>
   <div class="endpoint"><span class="method get">GET</span><code>/v1/accounts/{id}</code><span>Una cuenta: estado y código de Gmail</span></div>
-  <div class="endpoint"><span class="method patch">PATCH</span><code>/v1/accounts/{id}</code><span>Cambiar <code>name</code>, <code>ownerEmails</code>, <code>banks</code>, <code>tenantRef</code>, <code>payKey</code>, <code>payHolder</code> o <code>active</code></span></div>
+  <div class="endpoint"><span class="method patch">PATCH</span><code>/v1/accounts/{id}</code><span>Cambiar <code>name</code>, <code>ownerEmails</code>, <code>banks</code>, <code>tenantRef</code>, <code>payKey</code>, <code>payHolder</code>, <code>silentAfterHours</code> o <code>active</code></span></div>
   <div class="endpoint"><span class="method delete">DELETE</span><code>/v1/accounts/{id}</code><span>Eliminar (si ya tiene pagos, solo se desactiva)</span></div>
 <pre class="response"><code>{ "id": "acc_k3m9x2p7q4wz", "deleted": false, "disabled": true }</code></pre>
   <p>Al eliminar una cuenta se cancelan sus cobros abiertos; una cuenta desactivada no recibe avisos ni acepta cobros nuevos. Para guiar a tu cliente usa los eventos <code>account.confirmation_code</code> (muestra el código) y <code>account.activated</code> (ya quedó lista).</p>
@@ -333,6 +335,7 @@ Content-Type: application/json</code></pre>
       <tr><td><code>charge.expired</code></td><td>El cobro que venció sin pago. Libera tu pedido o reserva.</td></tr>
       <tr><td><code>account.confirmation_code</code></td><td><code>{ account, code, link }</code>: el código de Gmail para mostrarle a tu cliente.</td></tr>
       <tr><td><code>account.activated</code></td><td><code>{ account }</code>: llegó el primer aviso válido; la cuenta está lista.</td></tr>
+      <tr><td><code>account.silent</code></td><td><code>{ account, lastEmailAt, silentAfterHours }</code>: una cuenta activa lleva más de ese plazo sin avisos válidos. Puede ser un filtro de Gmail roto, o simplemente que nadie pagó. Llega una vez por silencio; un aviso nuevo lo reinicia.</td></tr>
       <tr><td><code>payment.test</code></td><td>Datos de prueba. No es un pago real.</td></tr>
     </tbody>
   </table>

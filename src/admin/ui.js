@@ -87,7 +87,8 @@ export const REASON_LABEL = {
 
 export const badge = (text, tone = "muted") => html`<span class="badge badge-${tone}">${text}</span>`;
 
-export function accountStatus(status) {
+export function accountStatus(status, silent = false) {
+  if (silent) return badge("Sin avisos", "warn");
   if (status === "active") return badge("Activa", "ok");
   if (status === "disabled") return badge("Desactivada", "muted");
   return badge("Esperando primer aviso", "warn");
