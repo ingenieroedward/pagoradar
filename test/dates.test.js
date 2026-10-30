@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseLongDate, parseNumericDate } from "../src/dates.js";
+import { fmtDate } from "../src/admin/ui.js";
 
 test("Colombian wall-clock time becomes UTC (UTC-5)", () => {
   assert.equal(parseNumericDate("01/10/2026 10:22:53"), "2026-10-01T15:22:53.000Z");
@@ -13,4 +14,13 @@ test("Colombian wall-clock time becomes UTC (UTC-5)", () => {
 test("impossible dates are rejected", () => {
   assert.equal(parseNumericDate("31/02/2026 10:00"), null);
   assert.equal(parseLongDate("5 de brumario de 2026"), null);
+});
+
+test("panel dates: hoy, ayer and mañana in Bogotá, the date when further away", () => {
+  const day = 86400_000;
+  assert.match(fmtDate(new Date().toISOString()), /^hoy, /);
+  assert.match(fmtDate(new Date(Date.now() - day).toISOString()), /^ayer, /);
+  assert.match(fmtDate(new Date(Date.now() + day).toISOString()), /^mañana, /);
+  assert.doesNotMatch(fmtDate(new Date(Date.now() - 3 * day).toISOString()), /^(hoy|ayer|mañana)/);
+  assert.equal(fmtDate(null), "—");
 });
