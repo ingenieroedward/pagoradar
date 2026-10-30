@@ -37,3 +37,14 @@ test("adding the amount changes only that, and the result is still a valid QR", 
   assert.equal(parseTlv(twice).filter((t) => t.id === "54").length, 1, "replaces an amount already there");
   assert.equal(parseTlv(twice).find((t) => t.id === "54").value, "101");
 });
+
+test("can add the amount and leave the QR's type as it was", () => {
+  const out = withAmount(staticQr, 101, "plain", { oneTime: false });
+  assert.equal(isEmvQr(out), true);
+  const tags = parseTlv(out);
+  assert.equal(tags.find((t) => t.id === "01").value, "11", "not marked as one-time");
+  assert.equal(tags.find((t) => t.id === "54").value, "101");
+  assert.deepEqual(tags.map((t) => t.id), ["00", "01", "26", "52", "53", "54", "58", "59", "60", "63"]);
+  const noType = parseTlv(withAmount(`${tlv("00", "01")}${tlv("52", "0000")}6304ABCD`, 101, "plain", { oneTime: false }));
+  assert.equal(noType.some((t) => t.id === "01"), false, "doesn't add one that wasn't there");
+});

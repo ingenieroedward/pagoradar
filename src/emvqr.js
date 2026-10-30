@@ -38,15 +38,18 @@ export function isEmvQr(text) {
 
 const tlv = ({ id, value }) => `${id}${String(value.length).padStart(2, "0")}${value}`;
 
-/** The same QR, marked as one-time (tag 01 = 12) and carrying this amount (tag 54). `format`: "plain" 101 or "decimal" 101.00. */
-export function withAmount(text, pesos, format = "plain") {
+/**
+ * The same QR carrying this amount (tag 54). `format`: "plain" 101 or "decimal" 101.00. It's also marked as one-time
+ * (tag 01 = 12), unless `oneTime` is false: some apps may refuse that mark on a key's QR, and that's what's being tried.
+ */
+export function withAmount(text, pesos, format = "plain", { oneTime = true } = {}) {
   const amount = format === "decimal" ? Number(pesos).toFixed(2) : String(Math.round(pesos));
-  const tags = parseTlv(text).filter((t) => t.id !== "54" && t.id !== "63" && t.id !== "01");
+  const tags = parseTlv(text).filter((t) => t.id !== "54" && t.id !== "63" && !(oneTime && t.id === "01"));
   const place = (tag) => {
     const at = tags.findIndex((t) => t.id > tag.id);
     tags.splice(at === -1 ? tags.length : at, 0, tag);
   };
-  place({ id: "01", value: "12" });
+  if (oneTime) place({ id: "01", value: "12" });
   place({ id: "54", value: amount });
   const body = `${tags.map(tlv).join("")}6304`;
   return body + crc16(body);
