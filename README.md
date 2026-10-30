@@ -118,7 +118,8 @@ la variable se puede borrar (se ignora).
 | **Apps** | Cada proyecto (Ibirifas, otro SaaS…): URL del webhook, secreto para verificar la firma (mostrar / cambiar), **evento de prueba**, **API keys** (se muestran una sola vez y se pueden revocar), sus cuentas y el historial de **entregas** con **Reintentar** |
 | **Cuentas** | Cada cuenta bancaria que reenvía sus avisos: dirección generada sola, correos dueños, bancos, "referencia externa" (`tenantRef`), **guía paso a paso** para el Gmail del dueño con el **código de confirmación de Gmail** en pantalla, estado (*Esperando primer aviso* → *Activa*), **probar un aviso (.eml)**, desactivar |
 | **Pagos** | Buscar por app, cuenta, banco, pagador o referencia y fechas; descargar CSV |
-| **Correos** | Lo que llegó y no contó como pago, con el motivo (7 días) |
+| **Cobros** | Lo que le pides a un cliente, con su estado. **Nuevo cobro** crea uno sin programar y da el enlace de pago para copiar o enviar por WhatsApp |
+| **Correos rechazados** | Lo que llegó y no contó como pago, con el motivo (7 días) |
 | **Ajustes** | **Dominios de recepción** (cada uno con su guía de Cloudflare y el secreto de su Worker), días que se guardan los pagos, **personas con acceso** (administradores y clientes), registro de cambios |
 
 **Seguridad del panel:** contraseña (scrypt) + código de 2 pasos obligatorio para todos (un código no
@@ -198,7 +199,7 @@ nuevo), `not_approved`, `unknown_address`, `account_disabled`, `ambiguous_header
 
 ### Webhook
 
-`POST` a cada URL de la fuente, `Content-Type: application/json`:
+`POST` a la URL del webhook de la app, `Content-Type: application/json`:
 
 ```json
 {
@@ -375,8 +376,9 @@ INGEST_SECRET=$(openssl rand -hex 32) MASTER_KEY=$(openssl rand -hex 32) INBOUND
 # y abre el enlace /setup?token=… que aparece en la consola
 ```
 
-Node 22 (usa `node:sqlite`, sin dependencias nativas). Dependencias: `mailauth` (DKIM) y
-`postal-mime` (leer el correo).
+Node 22 (usa `node:sqlite`, sin dependencias nativas). Dependencias: `mailauth` (DKIM), `postal-mime`
+(leer el correo) y `qrcode` (el QR del código de 2 pasos). El CI corre las pruebas y además construye y
+arranca la imagen de Docker.
 
 ## Si cambias de dominio
 

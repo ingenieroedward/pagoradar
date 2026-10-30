@@ -19,10 +19,11 @@ if (countdown) {
   const end = Date.now() + Number(countdown.dataset.countdown) * 1000;
   const tick = () => {
     const s = Math.max(0, Math.round((end - Date.now()) / 1000));
-    const h = Math.floor(s / 3600);
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
     const m = Math.floor((s % 3600) / 60);
     const sec = String(s % 60).padStart(2, "0");
-    countdown.textContent = h ? `${h} h ${String(m).padStart(2, "0")} min` : `${m}:${sec}`;
+    countdown.textContent = d ? `${d} ${d === 1 ? "día" : "días"} ${h} h` : h ? `${h} h ${String(m).padStart(2, "0")} min` : `${m}:${sec}`;
   };
   tick();
   setInterval(tick, 1000);

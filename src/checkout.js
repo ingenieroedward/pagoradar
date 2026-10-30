@@ -14,6 +14,14 @@ const ASSET_V = createHash("sha256").update(readFileSync(STATIC["/static/checkou
 const pageLimit = rateLimiter(120, 60_000);
 const ID_RE = /^\/c\/(chg_[a-z0-9]{8,40})(\/status)?$/;
 
+/** The time left before the page's script takes over the countdown. */
+function timeLeft(sec) {
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  if (d) return `${d} ${d === 1 ? "día" : "días"} ${h} h`;
+  return h ? `${h} h ${String(Math.floor((sec % 3600) / 60)).padStart(2, "0")} min` : `${Math.floor(sec / 60)} min`;
+}
+
 /** Amount for typing in a banking app: digits only ("25037"). */
 const plainAmount = (n) => String(Math.round(n));
 
@@ -54,7 +62,7 @@ function statusBlock(charge, remainingSec) {
   }
   return html`<section class="state state-wait" aria-live="polite">
     <span class="spinner" aria-hidden="true"></span>
-    <div><b>Esperando tu pago…</b><p class="muted">Esta página se actualiza sola cuando el banco lo confirme. Vence en <span data-countdown="${remainingSec}">${Math.floor(remainingSec / 60)} min</span>.</p></div>
+    <div><b>Esperando tu pago…</b><p class="muted">Esta página se actualiza sola cuando el banco lo confirme. Vence en <span data-countdown="${remainingSec}">${timeLeft(remainingSec)}</span>.</p></div>
   </section>`;
 }
 

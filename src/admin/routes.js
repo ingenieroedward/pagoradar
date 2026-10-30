@@ -1689,7 +1689,7 @@ function auditPage(s) {
     title: "Registro de cambios",
     active: "/audit",
     body: html`
-      <div class="head"><div><h1>Registro de cambios</h1><p class="muted">Quién hizo qué en el panel (se guarda un año).</p></div><a href="/settings">← Ajustes</a></div>
+      <div class="head"><a class="back" href="/settings">← Ajustes</a><div><h1>Registro de cambios</h1><p class="muted">Quién hizo qué en el panel (se guarda un año).</p></div></div>
       <div class="card">${rows.length === 0
         ? html`<p class="empty">Sin registros.</p>`
         : html`<div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Quién</th><th>Qué</th><th>Sobre</th></tr></thead><tbody>

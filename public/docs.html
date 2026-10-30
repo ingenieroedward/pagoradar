@@ -121,14 +121,15 @@ Content-Type: application/json</code></pre>
       <tr><td><code>404</code></td><td>No existe, o es de otra app (se responde igual a propósito).</td></tr>
       <tr><td><code>409</code></td><td>Conflicto: <code>reference</code> repetida con otros datos, cuenta desactivada, cobro ya pagado, sin valores únicos libres…</td></tr>
       <tr><td><code>429</code></td><td>Límite superado: 60 cuentas nuevas por hora y 2.000 cobros por hora por app.</td></tr>
-      <tr><td><code>5xx</code></td><td>Error de pagoradar: reintenta con espera.</td></tr>
+      <tr><td><code>503</code></td><td>Al crear una cuenta: no hay ningún dominio de recepción para esta app. No se arregla reintentando; hay que configurarlo en el panel.</td></tr>
+      <tr><td><code>5xx</code></td><td>Otro error de pagoradar: reintenta con espera.</td></tr>
     </tbody>
   </table>
 </section>
 
 <section id="cuentas">
   <h2>Cuentas receptoras</h2>
-  <p>Si tu app es un SaaS, crea la cuenta de cada cliente por API y muéstrale los pasos; el cliente nunca entra a pagoradar. <code>tenantRef</code> es tu id del cliente y llega en cada pago.</p>
+  <p>Si tu app es un SaaS, crea la cuenta de cada cliente por API y muéstrale los pasos; tu cliente no necesita entrar a pagoradar. <code>tenantRef</code> es tu id del cliente (en el panel se llama "referencia externa") y llega en cada pago.</p>
 
   <h3>El objeto cuenta</h3>
   <table class="fields">
@@ -193,6 +194,7 @@ Content-Type: application/json</code></pre>
 <section id="cobros">
   <h2>Cobros</h2>
   <p>Un cobro es lo que le pides a un cliente. pagoradar le asigna un <b>valor único</b> dentro de la cuenta para reconocer su pago solo con el aviso del banco, una <a href="#pagina-de-pago">página de pago</a> y un vencimiento.</p>
+  <div class="note"><b>Sin programar:</b> también puedes crear un cobro desde el panel (<a href="/charges/new">Nuevo cobro</a>) y enviar el enlace por WhatsApp. Funciona igual que por API: tu webhook recibe <code>charge.paid</code> o <code>charge.expired</code>, pero sin <code>reference</code> ni <code>metadata</code>.</div>
 
   <h3>Cómo se reconoce el pago</h3>
   <ul class="checks">
@@ -410,6 +412,7 @@ function verificarPagoradar(string $secreto, string $cabecera, string $cuerpo, i
 const pr = new Pagoradar({ apiKey: process.env.PAGORADAR_API_KEY, baseUrl: "{{BASE}}", timeoutMs: 10000 });
 
 await pr.accounts.create(fields);          // .list({ tenantRef }) .get(id) .update(id, fields) .remove(id)
+await pr.domains.list();                   // los dominios donde la app puede crear cuentas
 await pr.charges.create(fields);           // .list(filtros) .get(id) .cancel(id) .pay(id, paymentId)
 await pr.payments.list({ since, limit });  // { payments, next }
 await pr.webhooks.test();
