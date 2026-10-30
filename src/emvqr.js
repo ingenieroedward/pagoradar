@@ -1,7 +1,7 @@
 /**
  * Payment QR codes follow EMVCo: a text of tag + 2-digit length + value, ending with a CRC (tag 63). Bre-B's are
- * expected to be like that, but which bank apps honor an amount we add is unknown: that's why it's opt-in per account
- * and the page always keeps the Bre-B key next to it.
+ * expected to be like that, but not every bank app is verified to honor an amount we add: that's why the page always
+ * keeps the Bre-B key next to it.
  */
 
 /** [{ id, value }] or null when the text isn't well formed. */
@@ -39,10 +39,11 @@ export function isEmvQr(text) {
 const tlv = ({ id, value }) => `${id}${String(value.length).padStart(2, "0")}${value}`;
 
 /**
- * The same QR carrying this amount (tag 54). `format`: "plain" 101 or "decimal" 101.00. It's also marked as one-time
- * (tag 01 = 12), unless `oneTime` is false: some apps may refuse that mark on a key's QR, and that's what's being tried.
+ * The same QR carrying this amount (tag 54). `format`: "plain" 101 or "decimal" 101.00, both also marked as one-time
+ * (tag 01 = 12), or "keep" 101 with tag 01 as it was: Nu and Nequi refused the mark, and read it without it.
  */
-export function withAmount(text, pesos, format = "plain", { oneTime = true } = {}) {
+export function withAmount(text, pesos, format = "plain") {
+  const oneTime = format !== "keep";
   const amount = format === "decimal" ? Number(pesos).toFixed(2) : String(Math.round(pesos));
   const tags = parseTlv(text).filter((t) => t.id !== "54" && t.id !== "63" && !(oneTime && t.id === "01"));
   const place = (tag) => {

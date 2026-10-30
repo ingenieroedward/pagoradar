@@ -314,9 +314,10 @@ cobro**, que muestra los cobros de esa cuenta del valor más parecido al menos) 
   y `payTo` (`key`, `holder`, `banks`); ya pagado, `match` y `paidAmount` (lo que trajo el pago).
 - **QR:** cada cobro tiene en el panel el **QR de su enlace**, para cobrar en persona. En **Configuración de la
   cuenta → QR de Bre-B** subes el QR de tu banco y aparece en la página de pago; el cliente lo escanea y escribe el
-  valor. **QR con el valor (experimento):** pagoradar genera uno que ya trae el valor. Está apagado por defecto
-  porque no sabemos qué bancos lo aceptan: la página de cada cobro muestra dos versiones para probar, y la que
-  funcione se enciende en la cuenta. Solo funciona si el texto del QR es del formato de pagos EMVCo.
+  valor. **QR con el valor:** si se puede leer el texto del QR que subes, pagoradar genera uno que ya trae el valor, sin
+  decimales y sin marca de un solo uso. Funcionó en Nu, Nequi y Daviplata; aún falta Bancolombia, y quien no pueda
+  escanearlo paga con la llave, que sigue en la página. Se puede apagar en la cuenta. Solo funciona si el texto del
+  QR es del formato de pagos EMVCo.
 - **Página de pago** (`/c/<id>`, pública, sin datos privados): valor con botón Copiar, la **llave
   Bre-B** y el titular de la cuenta (`payKey` / `payHolder`, desde el panel o
   `PATCH /v1/accounts/<id>`), cuenta regresiva y el estado, que se actualiza solo. Al pagarse vuelve a

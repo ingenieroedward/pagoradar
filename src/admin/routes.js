@@ -55,7 +55,7 @@ const loginLimit = rateLimiter(10, 15 * 60_000);
 const passkeyLimit = rateLimiter(30, 15 * 60_000); // a sign-in takes two requests
 const MAX_PASSKEYS = 10;
 const MAX_QR_BYTES = 300 * 1024;
-const QR_AMOUNT_FORMATS = [["", "Apagado: usar la imagen de mi banco"], ["plain", "Encendido, valor sin decimales (101)"], ["decimal", "Encendido, valor con decimales (101.00)"]];
+const QR_AMOUNT_FORMATS = [["", "Apagado: usar la imagen de mi banco"], ["keep", "Encendido, recomendado: sin decimales y sin marca de un solo uso"], ["plain", "Encendido: sin decimales, con marca de un solo uso"], ["decimal", "Encendido: con decimales, con marca de un solo uso"]];
 // Computed once at start-up, so even the first login for an unknown email takes as long as any other.
 const dummy = hashPassword(randomToken(16));
 const dummyHash = () => dummy;
@@ -1165,10 +1165,10 @@ function accountPage(s, id, { error = null } = {}) {
         </div>
         <form method="post" action="/accounts/${id}/qr/settings" class="card">
           ${csrfField(csrf)}
-          ${section("QR con el valor (experimento)", "Pagoradar genera un QR que ya trae el valor, para que el cliente no lo escriba. No sabemos si todos los bancos lo aceptan: pruébalo antes con un cobro pequeño. La llave siempre sigue en la página.", html`
+          ${section("QR con el valor", "Pagoradar genera un QR que ya trae el valor, para que el cliente no lo escriba. Funcionó en Nu, Nequi y Daviplata; Bancolombia aún no se ha probado. Quien no pueda escanearlo paga con la llave, que siempre sigue en la página.", html`
             <label>Texto del QR <span class="hint">${qr?.payload ? "Leído o pegado antes." : "Se lee solo al subir la imagen si tu navegador puede; si no, escanéalo con un lector de QR y pégalo aquí."}</span><textarea name="payload" rows="3" spellcheck="false">${qr?.payload ?? ""}</textarea></label>
             ${qr?.payload ? (qrKnown ? html`<p>${badge("Formato de pagos reconocido", "ok")}</p>` : html`<p>${badge("Formato no reconocido", "warn")}</p>`) : ""}
-            <label>Mostrar a los clientes <select name="amountFormat">${QR_AMOUNT_FORMATS.map(([v, l]) => html`<option value="${v}"${v === (qr?.amountFormat ?? "") ? raw(" selected") : ""}>${l}</option>`)}</select></label>`)}
+            <label>Mostrar a los clientes <select name="amountFormat">${QR_AMOUNT_FORMATS.map(([v, l]) => html`<option value="${v}"${v === (qr?.payload ? (qr.amountFormat ?? "") : "keep") ? raw(" selected") : ""}>${l}</option>`)}</select></label>`)}
           <div class="form-actions"><button class="btn" type="submit">Guardar</button></div>
         </form>
       </details>` : ""}`,
@@ -1212,12 +1212,15 @@ async function uploadQr(s, id) {
   const isPng = body.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
   const isJpeg = body.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]));
   if (!isPng && !isJpeg) return sendJson(s.res, 400, { error: "Sube una imagen PNG o JPG." });
-  let payload;
+  let payload = null;
   try {
     const read = decodeURIComponent(String(s.req.headers["x-qr-payload"] ?? ""));
     if (isEmvQr(read)) payload = read;
   } catch {}
-  store.accountQr.set(id, { image: `data:image/${isPng ? "png" : "jpeg"};base64,${body.toString("base64")}`, payload });
+  // The first readable QR gets the amount by default; someone who already chose keeps their choice. A new image that
+  // can't be read drops the old text, or customers would be shown the QR that was replaced.
+  const amountFormat = !payload ? null : store.accountQr.get(id)?.payload ? undefined : "keep";
+  store.accountQr.set(id, { image: `data:image/${isPng ? "png" : "jpeg"};base64,${body.toString("base64")}`, payload, amountFormat });
   s.audit("Subió el QR de la cuenta", id, a.name);
   return sendJson(s.res, 200, { redirect: `/accounts/${id}?ok=qr` });
 }
@@ -1555,7 +1558,7 @@ async function chargePage(s, id) {
     ? { plain: await qrImage(withAmount(qr.payload, c.amount, "plain")), decimal: await qrImage(withAmount(qr.payload, c.amount, "decimal")) }
     : null;
   // Only when it's a different QR: a bank's that's already marked as one-time would come out the same.
-  const unmarked = tryQr ? withAmount(qr.payload, c.amount, "plain", { oneTime: false }) : null;
+  const unmarked = tryQr ? withAmount(qr.payload, c.amount, "keep") : null;
   if (tryQr && unmarked !== withAmount(qr.payload, c.amount, "plain")) tryQr.unmarked = await qrImage(unmarked);
   const message = `Hola. ${c.description ? `Para pagar ${c.description}: ` : "Para pagar: "}${fmtMoney(c.amount)} por Bre-B, aquí están los datos: ${link}`;
   return page(s, {
@@ -1591,7 +1594,7 @@ async function chargePage(s, id) {
       ${tryQr
         ? html`<div class="card">
             <h2>Probar el QR con el valor (experimento)</h2>
-            <p class="muted small">Escanea cada uno con la app de tu banco desde otro dispositivo, sin confirmar todavía, y mira si muestra ${fmtMoney(c.amount)}. El que funcione lo enciendes en Configuración de la cuenta.${tryQr.unmarked ? " El último todavía es solo de prueba: no se puede encender." : ""}</p>
+            <p class="muted small">Escanea cada uno con la app de tu banco desde otro dispositivo, sin confirmar todavía, y mira si muestra ${fmtMoney(c.amount)}. El que funcione lo enciendes en Configuración de la cuenta.</p>
             <div class="qr-pair mt">
               <figure><img class="qr-img" src="${tryQr.plain}" alt="QR de prueba con el valor sin decimales" width="200" height="200"><figcaption>Sin decimales</figcaption></figure>
               <figure><img class="qr-img" src="${tryQr.decimal}" alt="QR de prueba con el valor con decimales" width="200" height="200"><figcaption>Con decimales</figcaption></figure>
