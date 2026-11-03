@@ -53,6 +53,7 @@ const staticCache = new Map();
 
 const MESSAGES = {
   saved: "Cambios guardados.",
+  purged: "Datos borrados.",
   created: "Creado.",
   rotated: "Secreto del webhook cambiado: actualízalo en tu app.",
   revoked: "API key revocada.",
@@ -191,6 +192,7 @@ export async function handleAdmin(req, res, url, ctx) {
   if ((m = path.match(/^\/charges\/(chg_[a-z0-9]+)\/cancel$/)) && method === "POST") return cancelCharge(s, m[1]);
   if (path === "/inbox" && method === "GET") return inboxPage(s);
   if (path === "/settings") return method === "POST" ? saveSettings(s) : settingsPage(s);
+  if (path === "/settings/purge" && method === "POST") return purgeData(s);
   if (path === "/settings/admins" && method === "POST") return createAdmin(s);
   if ((m = path.match(/^\/settings\/admins\/([\w-]+)\/delete$/)) && method === "POST") return deleteAdmin(s, m[1]);
   if (path === "/me" && method === "GET") return mePage(s);
@@ -1186,6 +1188,18 @@ function settingsPage(s, { error = null, tempPassword = null } = {}) {
           <label>Días que se guardan los pagos <span class="hint">Entre 30 y 3650.</span><input type="number" name="retentionDays" min="30" max="3650" value="${store.settings.get("retention_days", String(config.retentionDays ?? 180))}"></label>`)}
         <div class="form-actions"><button class="btn btn-primary" type="submit">Guardar cambios</button></div>
       </form>
+      <form method="post" action="/settings/purge" class="card" data-confirm="¿Borrar estos datos? No se puede deshacer.">
+        ${csrfField(csrf)}
+        ${section("Empezar de cero", "Borra pagos, cobros terminados, correos y entregas anteriores. Las apps, cuentas, API keys y administradores no se tocan, ni los cobros abiertos.", html`
+          <label>Qué borrar
+            <select name="scope">
+              <option value="month">Todo lo anterior a este mes (desde el 1 de ${monthName()})</option>
+              <option value="all">Absolutamente todo</option>
+            </select>
+          </label>
+          <label>Para confirmar, escribe <b>BORRAR</b><input type="text" name="confirm" autocomplete="off" required placeholder="BORRAR"></label>`)}
+        <div class="form-actions"><button class="btn btn-danger" type="submit">Borrar datos</button></div>
+      </form>
       <div class="card">
         ${section("Administradores", "Cada uno entra con su correo, su contraseña y su código de 2 pasos.", html`
           <ul class="list">${admins.map((a) => html`<li>
@@ -1213,6 +1227,23 @@ function saveSettings(s) {
   store.settings.set("retention_days", days);
   s.audit("Cambió los ajustes", null, `dominio ${domain} · ${days} días`);
   return redirect(s.res, "/settings?ok=saved");
+}
+
+/** 00:00 of the 1st of the current month in Colombia (UTC-5, no DST), as an ISO instant. */
+function monthStartIso(now = new Date()) {
+  const co = new Date(now.getTime() - 5 * 3600_000);
+  return new Date(Date.UTC(co.getUTCFullYear(), co.getUTCMonth(), 1, 5)).toISOString();
+}
+const monthName = (now = new Date()) =>
+  new Date(now.getTime() - 5 * 3600_000).toLocaleDateString("es-CO", { month: "long", year: "numeric", timeZone: "UTC" });
+
+function purgeData(s) {
+  if (String(s.form.confirm ?? "").trim().toUpperCase() !== "BORRAR") return settingsPage(s, { error: "Escribe BORRAR para confirmar." });
+  const all = s.form.scope === "all";
+  const before = all ? null : monthStartIso();
+  const n = s.ctx.store.purgeData(before);
+  s.audit("Borró datos", all ? "todo" : `anteriores a ${before}`, `${n.payments} pagos · ${n.charges} cobros · ${n.inbox} correos · ${n.deliveries} entregas`);
+  return redirect(s.res, "/settings?ok=purged");
 }
 
 async function createAdmin(s) {

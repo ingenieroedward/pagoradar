@@ -724,6 +724,20 @@ export function openStore(path, { masterKey } = {}) {
       run("DELETE FROM sessions WHERE expires_at < ?", new Date(at).toISOString());
       run("DELETE FROM audit WHERE at < ?", ago(365));
     },
+    /**
+     * Starts over: deletes payments, finished charges, rejected emails and finished deliveries from before `beforeIso`
+     * (everything when null). Apps, accounts, API keys, admins and settings stay; so do open charges and pending deliveries.
+     */
+    purgeData(beforeIso = null) {
+      const cut = beforeIso ?? "9999-12-31T23:59:59.999Z";
+      const count = (sql, ...a) => Number(run(sql, ...a).changes);
+      return {
+        payments: count("DELETE FROM payments WHERE received_at < ?", cut),
+        charges: count("DELETE FROM charges WHERE status != 'pending' AND COALESCE(paid_at, created_at) < ?", cut),
+        inbox: count("DELETE FROM inbox WHERE received_at < ?", cut),
+        deliveries: count("DELETE FROM deliveries WHERE status != 'pending' AND created_at < ?", cut),
+      };
+    },
     close: () => db.close(),
   };
 }

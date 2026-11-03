@@ -299,6 +299,25 @@ test("charges: pay key on the account, list, cancel", async () => {
   assert.match(r.text, /asociado a mano/);
 });
 
+test("settings: purge data — needs BORRAR, keeps apps and accounts, 'month' keeps this month's", async () => {
+  const b = await loggedIn();
+  const acc = store.accounts.list()[0];
+  const pay = (key, paidAt) => store.payments.add(acc.appId, acc.id, { bank: "nequi", method: "breb", methodText: null, amountCents: 100_000, currency: "COP", payerName: "Viejo", payerNameNormalized: "VIEJO", payerBank: null, reference: null, transactionId: null, accountHint: null, paidAt, dkimDomain: "nequi.com.co", dedupeKey: key });
+  const fresh = pay("purge-new", new Date().toISOString());
+  await b.req("/settings");
+  let r = await b.req("/settings/purge", { method: "POST", form: { _csrf: b.csrf(), scope: "all", confirm: "no" } });
+  assert.equal(r.status, 400);
+  assert.ok(store.payments.get(fresh.id), "nothing deleted without confirmation");
+  r = await b.req("/settings/purge", { method: "POST", form: { _csrf: b.csrf(), scope: "month", confirm: "borrar" } });
+  assert.equal(r.location, "/settings?ok=purged");
+  assert.ok(store.payments.get(fresh.id), "this month's payments stay");
+  assert.ok(store.accounts.get(acc.id) && store.apps.list().length > 0);
+  assert.equal(store.purgeData("2020-01-01T00:00:00.000Z").payments, 0, "a cut before the payment deletes nothing");
+  await b.req("/settings");
+  await b.req("/settings/purge", { method: "POST", form: { _csrf: b.csrf(), scope: "all", confirm: "BORRAR" } });
+  assert.ok(!store.payments.get(fresh.id));
+});
+
 test("login: a locked account only says so to whoever knows the password", async () => {
   const { hashPassword } = await import("../src/security.js");
   const locked = store.admins.create({ email: "bloqueado@example.com", passwordHash: await hashPassword("clave-correcta-123") });
