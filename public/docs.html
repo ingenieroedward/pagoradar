@@ -207,6 +207,17 @@ Content-Type: application/json</code></pre>
     <li><b>Tarde</b>: un pago hecho antes del vencimiento (o hasta 5 minutos después) lo salda aunque el aviso del banco llegue más tarde (<code>late: true</code>). Por eso el valor de un cobro vencido queda reservado 30 minutos.</li>
   </ul>
 
+  <h3>Ejemplo: dos clientes pagan lo mismo</h3>
+  <p>Tu tienda cobra <code>25.000</code> a Ana y a Luis a la misma cuenta, casi al mismo tiempo:</p>
+  <ol>
+    <li>Tu app crea dos cobros. Ana recibe <code>amount: 25001</code> y Luis <code>amount: 25002</code> (el segundo toma el siguiente valor libre; <code>baseAmount</code> sigue siendo <code>25000</code>).</li>
+    <li>Cada cliente abre su <code>checkoutUrl</code> y ve su valor exacto.</li>
+    <li>Ana paga <code>25.001</code>. El aviso del banco pasa los filtros de autenticidad (firma DKIM del banco, es para tu correo, se entiende y está aprobada).</li>
+    <li>pagoradar busca en esa cuenta un cobro con ese valor exacto, abierto (o vencido hace poco) y cuyo periodo incluya la hora del pago, con 5 minutos de margen por lado. Solo el de Ana cumple.</li>
+    <li>El cobro de Ana pasa a <code>paid</code> con <code>match: "exact"</code> y tu app recibe <code>payment.received</code> y <code>charge.paid</code>. El de Luis sigue abierto.</li>
+  </ol>
+  <div class="note"><b>Límites:</b> cada cuenta tiene hasta 999 valores únicos libres por monto. Si no queda ninguno, crear el cobro responde <code>409</code> hasta que venzan cobros abiertos. Un aviso repetido no paga dos veces, y un cobro cancelado solo se salda <a href="#cobros">a mano</a>.</div>
+
   <h3>Crear un cobro</h3>
   <div class="endpoint"><span class="method post">POST</span><code>/v1/charges</code></div>
   <table class="fields">
