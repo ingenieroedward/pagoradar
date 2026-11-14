@@ -292,6 +292,12 @@ pesos (`uniqueAmount: "up"`, por defecto), **menos** (`"down"`, un pequeño desc
 un pago de $25.000 que no es de ningún cobro no salda nada por error. El aviso que trae exactamente
 ese valor, hecho mientras el cobro estaba abierto, lo paga (`match: "exact"`).
 
+**Ejemplo:** Ana y Luis deben $25.000 a la misma cuenta. Ana recibe un cobro de $25.001 y Luis uno de
+$25.002. Cuando llega el aviso de $25.001, pagoradar busca en esa cuenta un cobro con ese valor exacto,
+abierto (o vencido hace poco) y cuyo periodo incluya la hora del pago (±5 minutos): solo el de Ana cumple,
+así que queda `paid` y tu app recibe `payment.received` y `charge.paid`. El de Luis sigue abierto. Si no
+quedan valores libres (hasta 999 por monto), crear el cobro responde `409` hasta que venzan otros.
+
 **Si el cliente paga el valor redondo** ($25.000 en vez de $25.001): si en esa cuenta hay **un solo**
 cobro abierto que pidió $25.000, se paga igual (`match: "approximate"`, `paidAmount: 25000`). Si hay
 varios, decide el titular esperado (`payerName`); si aun así no se puede saber, no se adivina: el pago
