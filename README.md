@@ -288,8 +288,8 @@ cliente ──paga 25.001 por Bre-B──▶ banco ──aviso──▶ pagorada
 
 **Valor único:** cada cobro abierto de una cuenta tiene un valor distinto: lo pedido **más** 1 a 999
 pesos (`uniqueAmount: "up"`, por defecto), **menos** (`"down"`, un pequeño descuento) o exacto
-(`"off"`; entonces, si hay varios iguales, decide `payerName`). Nunca se usa el valor redondo, así
-un pago de $25.000 que no es de ningún cobro no salda nada por error. El aviso que trae exactamente
+(`"off"`; entonces, si hay varios iguales, decide `payerName`). Con `up` y `down` nunca se usa el valor
+redondo, así un pago de $25.000 que no es de ningún cobro no salda nada por error. El aviso que trae exactamente
 ese valor, hecho mientras el cobro estaba abierto, lo paga (`match: "exact"`).
 
 **Ejemplo:** Ana y Luis deben $25.000 a la misma cuenta. Ana recibe un cobro de $25.001 y Luis uno de
@@ -313,11 +313,20 @@ cobro**, que muestra los cobros de esa cuenta del valor más parecido al menos) 
 | `POST /v1/charges/<id>/cancel` | Lo cancela (solo si está pendiente) y libera su valor |
 | `POST /v1/charges/<id>/pay` | `{ "paymentId": "pay_…" }`: asociar a mano un pago que llegó con otro valor (también a un cobro vencido o cancelado) |
 
-- En vez de `account` puedes mandar `tenantRef`: usa la cuenta de ese cliente.
+- En vez de `account` puedes mandar `tenantRef`: usa la cuenta de ese cliente (si varias lo comparten, la
+  más reciente activa).
+- **Valor exacto:** `"uniqueAmount": "off"` pide justo `amount` (`adjustment: 0`). Entonces cualquier pago
+  de ese valor a la cuenta mientras está abierto lo salda, aunque sea de otra persona; con varios cobros
+  iguales decide `payerName`, y si no se puede saber se asocia a mano. Manda `payerName` siempre que lo sepas.
+- **Varias cuentas por app:** una app puede tener todas las cuentas receptoras que quieras, por ejemplo una
+  por sucursal, cada una con su cuenta bancaria, su `tenantRef` y su llave. Cada cobro va a la cuenta que
+  indiques y cada evento trae `data.account`. El valor único se reparte por cuenta.
 - `amount` en pesos enteros; `expiresInMinutes` de 5 a 10080 (30 por defecto). `reference` es tu id
   de pedido: única por app, y crear otra vez con la misma devuelve el mismo cobro (reintentos seguros).
 - El cobro trae `amount` (lo que debe pagar), `baseAmount` (lo pedido), `adjustment`, `checkoutUrl`
-  y `payTo` (`key`, `holder`, `banks`); ya pagado, `match` y `paidAmount` (lo que trajo el pago).
+  y `payTo` (`key`, `holder`, `banks`); ya pagado, `match` y `paidAmount` (lo que trajo el pago). **No trae
+  el QR** (ni imagen ni contenido): el QR del banco solo sale en la página de pago. Para mostrar un QR en tu
+  app, genéralo con `checkoutUrl`.
 - **QR:** cada cobro tiene en el panel el **QR de su enlace**, para cobrar en persona. En **Configuración de la
   cuenta → QR de Bre-B** subes el QR de tu banco y aparece en la página de pago; el cliente lo escanea y escribe el
   valor. **QR con el valor:** si se puede leer el texto del QR que subes, pagoradar genera uno que ya trae el valor, sin
@@ -329,7 +338,10 @@ cobro**, que muestra los cobros de esa cuenta del valor más parecido al menos) 
   `PATCH /v1/accounts/<id>`), cuenta regresiva y el estado, que se actualiza solo. Al pagarse vuelve a
   `returnUrl`. Puedes no usarla y mostrar tú `amount` y `payTo`.
 - `charge.paid` trae el cobro y `data.payment`; `data.late: true` si el aviso llegó justo después de
-  vencer (el valor de un cobro vencido queda reservado 30 min por eso). `charge.expired` al vencer.
+  vencer (el valor de un cobro vencido queda reservado 30 min por eso). `charge.expired` al vencer
+  (a más tardar unos 15 s después de `expiresAt`); en los 30 min siguientes aún puede llegar `charge.paid`
+  con `late: true`. **Cancelar no envía evento**, ni por API ni desde el panel: la respuesta de
+  `/cancel` ya es el cobro `canceled`.
 - En el panel, **Cobros** lista todos con su estado y permite cancelarlos. Con **Nuevo cobro** creas uno sin
   programar (cuenta con llave Bre-B, valor, valor único, vencimiento) y envías el enlace por WhatsApp o lo copias. Si la app
   tiene webhook, también recibe `charge.paid` o `charge.expired`.
