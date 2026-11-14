@@ -42,6 +42,7 @@
       <p class="toc-group">Guías</p>
       <a href="#guia-tienda">Cobrar un pedido</a>
       <a href="#guia-saas">SaaS con varios clientes</a>
+      <a href="#guia-sucursales">Varias sucursales</a>
       <a href="#guia-conciliar">Pagos sin cobro</a>
       <a href="#seguridad">Seguridad</a>
       <a href="#bancos">Bancos soportados</a>
@@ -200,7 +201,7 @@ Content-Type: application/json</code></pre>
 
   <h3>Cómo se reconoce el pago</h3>
   <ul class="checks">
-    <li><b>Valor único</b> (<code>uniqueAmount</code>): <code>"up"</code> (por defecto) suma de 1 a 999 pesos a lo pedido; <code>"down"</code> los resta (un pequeño descuento); <code>"off"</code> cobra el valor exacto. Nunca se usa el valor redondo, así un pago normal de <code>25.000</code> no salda un cobro por error.</li>
+    <li><b>Valor único</b> (<code>uniqueAmount</code>): <code>"up"</code> (por defecto) suma de 1 a 999 pesos a lo pedido; <code>"down"</code> los resta (un pequeño descuento); <code>"off"</code> cobra el valor exacto (<a href="#valor-exacto">ver abajo</a>). Con <code>up</code> y <code>down</code> nunca se usa el valor redondo, así un pago normal de <code>25.000</code> no salda un cobro por error.</li>
     <li><b>Exacto</b>: el aviso trae justo ese valor y se hizo mientras el cobro estaba abierto → <code>match: "exact"</code>. Con <code>"off"</code> y varios cobros iguales, decide <code>payerName</code>.</li>
     <li><b>Valor redondo</b>: si el cliente paga lo pedido (25.000 en vez de 25.001) y solo un cobro abierto de esa cuenta pidió ese valor (o solo uno espera a ese titular) → <code>match: "approximate"</code>. Si hay duda, no se adivina.</li>
     <li><b>A mano</b>: <code>POST /v1/charges/{id}/pay</code> o el panel → <code>match: "manual"</code>.</li>
@@ -271,13 +272,20 @@ Content-Type: application/json</code></pre>
   "paidAt": null
 }</code></pre>
 
+  <h3 id="valor-exacto">Cobrar el valor exacto</h3>
+  <p>Manda <code>"uniqueAmount": "off"</code> y el cobro pide justo <code>amount</code>: <code>amount</code> = <code>baseAmount</code> y <code>adjustment: 0</code>. En el panel, Nuevo cobro → Valor único → "Cobrar el valor exacto".</p>
+<pre><code>curl -X POST {{BASE}}/v1/charges \
+  -H "Authorization: Bearer $PAGORADAR_API_KEY" -H "Content-Type: application/json" \
+  -d '{"account":"acc_k3m9x2p7q4wz","amount":25000,"uniqueAmount":"off","payerName":"Ana Pérez","reference":"order-124"}'</code></pre>
+  <div class="note warn"><b>Ten en cuenta:</b> el valor ya no distingue a quién paga. Cualquier pago de <code>25.000</code> a esa cuenta mientras el cobro está abierto lo salda, aunque sea de otra persona. Si hay varios cobros abiertos por el mismo valor en la cuenta, decide <code>payerName</code> (el titular que trae el aviso); si no se puede saber, el pago queda sin cobro y se <a href="#cobros">asocia a mano</a>. Úsalo cuando el cliente no puede pagar un valor distinto, y manda <code>payerName</code> siempre que lo sepas.</div>
+
   <h3>Estados</h3>
   <p><span class="pill warn">pending</span> → <span class="pill ok">paid</span> · <span class="pill">expired</span> · <span class="pill">canceled</span>. Un cobro vencido aún puede pasar a <code>paid</code> por un aviso tardío o asociándolo a mano.</p>
 
   <h3>Otras rutas</h3>
   <div class="endpoint"><span class="method get">GET</span><code>/v1/charges?status=&amp;reference=&amp;account=&amp;tenantRef=&amp;limit=&amp;offset=</code><span>Listar → <code>{ charges, total }</code> (50 por defecto, máximo 500)</span></div>
   <div class="endpoint"><span class="method get">GET</span><code>/v1/charges/{id}</code><span>Uno</span></div>
-  <div class="endpoint"><span class="method post">POST</span><code>/v1/charges/{id}/cancel</code><span>Cancelar (solo si está pendiente); libera su valor</span></div>
+  <div class="endpoint"><span class="method post">POST</span><code>/v1/charges/{id}/cancel</code><span>Cancelar (solo si está pendiente); libera su valor. No envía webhook: la respuesta ya es el cobro <code>canceled</code></span></div>
   <div class="endpoint"><span class="method post">POST</span><code>/v1/charges/{id}/pay</code><span>Asociar a mano un pago: <code>{ "paymentId": "pay_…" }</code></span></div>
   <p>Para asociar a mano, el pago debe ser de la misma cuenta y no estar asociado a otro cobro; sirve también para un cobro vencido o cancelado.</p>
 </section>
@@ -343,13 +351,14 @@ Content-Type: application/json</code></pre>
     <tbody>
       <tr><td><code>payment.received</code></td><td>Un <a href="#pagos">pago</a>, con <code>account</code> (<code>id</code>, <code>name</code>, <code>tenantRef</code>) y <code>charge</code> (<code>{ id, reference }</code> o <code>null</code>).</td></tr>
       <tr><td><code>charge.paid</code></td><td>El <a href="#cobros">cobro</a> pagado, con <code>payment</code>, <code>late</code> y <code>manual</code> (si se asoció a mano). Mira <code>match</code> y <code>paidAmount</code>.</td></tr>
-      <tr><td><code>charge.expired</code></td><td>El cobro que venció sin pago. Libera tu pedido o reserva.</td></tr>
+      <tr><td><code>charge.expired</code></td><td>El cobro que venció sin pago (<code>status: "expired"</code>), con los mismos campos que el cobro. Llega a más tardar unos 15 segundos después de <code>expiresAt</code>. Libera tu pedido o reserva, pero ten en cuenta que en los 30 minutos siguientes aún puede llegar <code>charge.paid</code> con <code>late: true</code>, si el cliente pagó a tiempo y el aviso del banco tardó.</td></tr>
       <tr><td><code>account.confirmation_code</code></td><td><code>{ account, code, link }</code>: el código de Gmail para mostrarle a tu cliente.</td></tr>
       <tr><td><code>account.activated</code></td><td><code>{ account }</code>: llegó el primer aviso válido; la cuenta está lista.</td></tr>
       <tr><td><code>account.silent</code></td><td><code>{ account, lastEmailAt, silentAfterHours }</code>: una cuenta activa lleva más de ese plazo sin avisos válidos. Puede ser un filtro de Gmail roto, o simplemente que nadie pagó. Llega una vez por silencio; un aviso nuevo lo reinicia.</td></tr>
       <tr><td><code>payment.test</code></td><td>Datos de prueba. No es un pago real.</td></tr>
     </tbody>
   </table>
+  <p><b>Cancelar un cobro no envía evento</b>, ni por API ni desde el panel: quien cancela ya lo sabe, y la respuesta de <code>POST /v1/charges/{id}/cancel</code> es el cobro <code>canceled</code>. Si cancelan en el panel y tu app necesita enterarse, consulta <code>GET /v1/charges/{id}</code>. Un cobro cancelado solo pasa a <code>paid</code> si se asocia un pago a mano, y entonces sí llega <code>charge.paid</code>.</p>
   <p>Ignora con <code>200</code> los tipos que no conozcas: pueden aparecer tipos nuevos.</p>
 </section>
 
@@ -442,6 +451,8 @@ try {
 <section id="pagina-de-pago">
   <h2>Página de pago</h2>
   <p>Cada cobro tiene una página pública en <code>checkoutUrl</code> (<code>{{BASE}}/c/chg_…</code>): el valor exacto con botón Copiar, la llave Bre-B y el titular de la cuenta (<code>payKey</code>, <code>payHolder</code>), una cuenta regresiva y el estado, que se actualiza solo. Al pagarse muestra "¡Pago recibido!" y vuelve a <code>returnUrl</code>. No muestra <code>reference</code> ni <code>metadata</code>.</p>
+  <p><b>QR:</b> si la cuenta tiene subido el QR de su banco (en el panel, Configuración de la cuenta → QR de Bre-B), la página lo muestra. Si se pudo leer su contenido, el QR ya trae el valor del cobro; si no, es la imagen del banco y el cliente escribe el valor. Debajo siempre dice a qué llave enviar si no puede escanearlo.</p>
+  <p><b>La API no devuelve el QR</b>, ni la imagen ni su contenido: el cobro trae <code>checkoutUrl</code> y los datos para pagar con llave (<code>amount</code> y <code>payTo</code>). Si quieres mostrar un QR en tu app, genera uno con <code>checkoutUrl</code>: el cliente lo escanea con la cámara y abre la página de pago, con su QR para la app del banco.</p>
   <p>¿Prefieres tu propia pantalla? Usa <code>amount</code>, <code>adjustment</code>, <code>payTo</code> y <code>expiresAt</code> del cobro, y consulta <code>GET /v1/charges/{id}</code> o espera el webhook.</p>
   <div class="note warn"><b>No confíes en la redirección.</b> Que el cliente vuelva a tu <code>returnUrl</code> no prueba que pagó: marca el pedido como pagado solo con <code>charge.paid</code> o consultando el cobro desde tu servidor.</div>
 </section>
@@ -465,6 +476,17 @@ try {
     <li>Con <code>account.activated</code>, marca su integración como lista.</li>
     <li>En cada evento usa <code>data.account.id</code> o <code>data.account.tenantRef</code> para saber de qué cliente es, y crea cobros con <code>tenantRef</code>.</li>
   </ol>
+</section>
+
+<section id="guia-sucursales">
+  <h2>Guía: varias sucursales</h2>
+  <p>Una app puede tener todas las cuentas receptoras que necesites. Si cada sucursal recibe en su propia cuenta bancaria, crea una cuenta receptora por sucursal:</p>
+  <ol class="steps">
+    <li>Crea la cuenta de cada sucursal desde el panel o con <code>POST /v1/accounts</code>, con su propio <code>tenantRef</code> (por ejemplo <code>"sucursal-centro"</code>), y guarda su <code>id</code>. Cada una tiene su dirección y su filtro de Gmail, y su <code>payKey</code>.</li>
+    <li>Crea cada cobro con el <code>account</code> (o el <code>tenantRef</code>) de la sucursal que vende: la página de pago muestra la llave y el QR de esa sucursal.</li>
+    <li>En cada evento, <code>data.account.id</code> o <code>data.account.tenantRef</code> dice de qué sucursal es. Para listar, filtra con <code>?account=</code> o <code>?tenantRef=</code>.</li>
+  </ol>
+  <div class="note"><b>Un <code>tenantRef</code> por sucursal.</b> Si varias cuentas comparten el mismo, un cobro con <code>tenantRef</code> usa la más reciente que no esté desactivada; en ese caso manda <code>account</code>. El valor único se reparte por cuenta, así que dos sucursales pueden tener abierto el mismo valor sin confundirse. Si todas las sucursales reciben en la misma cuenta bancaria, es una sola cuenta receptora; para separarlas usa <code>reference</code> o <code>metadata</code> del cobro.</div>
 </section>
 
 <section id="guia-conciliar">
