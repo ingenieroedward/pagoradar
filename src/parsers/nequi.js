@@ -4,8 +4,9 @@ import { parseLongDate } from "../dates.js";
 /**
  * Nequi (personal): "¡Recibiste plata por Bre-B!" —
  * "Recibiste 100.000 de Ana Pérez el 16 de septiembre de 2026 a las 7:09 p.m, desde el banco Banco Uno."
+ * At one o'clock it's "a la 1:44 p.m.".
  */
-const RECEIVED = /Recibiste\s+(\$?\s*[\d.,]+)\s+de\s+(.+?)\s+el\s+(\d{1,2}\s+de\s+[a-záéíóú]+\s+de\s+\d{4}(?:\s+a\s+las\s+\d{1,2}:\d{2}\s*(?:[ap]\.?\s*m\.?)?)?)(?:[,.]?\s*desde\s+(?:el\s+banco\s+)?(.+?)\.)?(?=\s|$)/i;
+const RECEIVED = /Recibiste\s+(\$?\s*[\d.,]+)\s+de\s+(.+?)\s+el\s+(\d{1,2}\s+de\s+[a-záéíóú]+\s+de\s+\d{4}(?:\s+a\s+las?\s+\d{1,2}:\d{2}\s*(?:[ap]\.?\s*m\.?)?)?)(?:[,.]?\s*desde\s+(?:el\s+banco\s+)?(.+?)\.)?(?=\s|$)/i;
 
 export const nequi = {
   id: "nequi",
@@ -27,7 +28,8 @@ export const nequi = {
       method: /Bre-?B/i.test(text) ? "breb" : "transfer",
       methodText: null,
       accountHint: null,
-      paidAt: parseLongDate(m[3]),
+      // A date without its time would be midnight and miss the charge it pays: then the email's own Date is used.
+      paidAt: /\d:\d{2}/.test(m[3]) ? parseLongDate(m[3]) : null,
     };
   },
 };

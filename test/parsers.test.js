@@ -36,6 +36,14 @@ test("Nequi personal: amount, payer, bank and date from one sentence", () => {
   assert.equal(nequi.matches("Enviaste 50.000 a Pedro el 1 de octubre de 2026"), false);
 });
 
+test("one o'clock is \"a la 1:44\", and a date without its time isn't midnight", () => {
+  const at = (text) => nequi.parse(text).paidAt;
+  assert.equal(at("Recibiste 3.000 de Ana Prueba el 16 de noviembre de 2026 a la 1:44 p.m, desde el banco Banco Uno."), "2026-11-16T18:44:00.000Z");
+  assert.equal(at("Recibiste 3.000 de Ana Prueba el 16 de noviembre de 2026 a la 1:05 a. m."), "2026-11-16T06:05:00.000Z");
+  assert.equal(at("Recibiste 3.000 de Ana Prueba el 16 de noviembre de 2026, desde el banco Banco Uno."), null, "the email's Date is used instead");
+  assert.equal(bancolombia.parse("Bancolombia: Recibiste una transferencia por $3,000.00 de ANA PRUEBA en tu cuenta **1234, el 16/11/2026 a la 1:44 p.m.").paidAt, "2026-11-16T18:44:00.000Z");
+});
+
 test("Bancolombia: US-style amount, account and llave", () => {
   const p = bancolombia.parse(bancolombiaText().replace(/\s+/g, " "));
   assert.equal(p.amountCents, 400000);
