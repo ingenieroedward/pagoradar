@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import QRCode from "qrcode";
-import { isEmvQr, withAmount } from "./emvqr.js";
+import { qrForCharge } from "./emvqr.js";
 import { expireCharges } from "./charges.js";
 import { deliverDue } from "./webhooks.js";
 import { clientIp, rateLimiter, sendHtml, sendJson } from "./http.js";
@@ -71,8 +71,9 @@ function statusBlock(charge, remainingSec) {
 /** The account's Bre-B QR, if it has one: with the amount inside when that's switched on, otherwise the bank's image. */
 async function qrSection(charge, qr, account) {
   if (!qr) return "";
-  const dynamic = qr.amountFormat && isEmvQr(qr.payload);
-  const src = dynamic ? await QRCode.toDataURL(withAmount(qr.payload, charge.amount, qr.amountFormat), { margin: 1, width: 320 }) : qr.image;
+  const code = qrForCharge(qr, charge.amount);
+  const dynamic = code?.includesAmount;
+  const src = dynamic ? await QRCode.toDataURL(code.text, { margin: 1, width: 320 }) : qr.image;
   if (!src) return "";
   const ext = src.startsWith("data:image/jpeg") ? "jpg" : "png";
   return html`<section class="how pay-qr">

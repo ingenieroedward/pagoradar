@@ -83,6 +83,11 @@ export interface Charge {
   expiresAt: string;
   paidAt: string | null;
   canceledAt: string | null;
+  /**
+   * The text of the account's Bre-B QR, to draw it in your app; only in API responses, and null when the charge isn't
+   * pending or the account has no readable QR. `includesAmount`: the bank app shows the amount; otherwise the customer types it.
+   */
+  qr?: { text: string; includesAmount: boolean } | null;
 }
 
 export interface CreateCharge {
