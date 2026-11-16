@@ -36,6 +36,15 @@ export function isEmvQr(text) {
   return crc16(text.slice(0, -4)) === tags.at(-1).value.toUpperCase();
 }
 
+/**
+ * The text of the QR to pay this amount into an account, or null when its QR can't be read: with the amount inside
+ * when the account has it switched on (`amountFormat`), otherwise the bank's own, where the customer types the amount.
+ */
+export function qrForCharge(qr, pesos) {
+  if (!isEmvQr(qr?.payload)) return null;
+  return qr.amountFormat ? { text: withAmount(qr.payload, pesos, qr.amountFormat), includesAmount: true } : { text: qr.payload, includesAmount: false };
+}
+
 const tlv = ({ id, value }) => `${id}${String(value.length).padStart(2, "0")}${value}`;
 
 /**

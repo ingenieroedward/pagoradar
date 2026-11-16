@@ -324,9 +324,10 @@ cobro**, que muestra los cobros de esa cuenta del valor más parecido al menos) 
 - `amount` en pesos enteros; `expiresInMinutes` de 5 a 10080 (30 por defecto). `reference` es tu id
   de pedido: única por app, y crear otra vez con la misma devuelve el mismo cobro (reintentos seguros).
 - El cobro trae `amount` (lo que debe pagar), `baseAmount` (lo pedido), `adjustment`, `checkoutUrl`
-  y `payTo` (`key`, `holder`, `banks`); ya pagado, `match` y `paidAmount` (lo que trajo el pago). **No trae
-  el QR** (ni imagen ni contenido): el QR del banco solo sale en la página de pago. Para mostrar un QR en tu
-  app, genéralo con `checkoutUrl`.
+  y `payTo` (`key`, `holder`, `banks`); ya pagado, `match` y `paidAmount` (lo que trajo el pago). Mientras
+  está pendiente trae `qr` (`{ text, includesAmount }`): el texto del QR de Bre-B para dibujarlo en tu app,
+  con el valor si la cuenta lo tiene encendido. Es `null` si la cuenta no tiene un QR que se pudo leer. Solo
+  en las respuestas de la API, no en los eventos.
 - **QR:** cada cobro tiene en el panel el **QR de su enlace**, para cobrar en persona. En **Configuración de la
   cuenta → QR de Bre-B** subes el QR de tu banco y aparece en la página de pago; el cliente lo escanea y escribe el
   valor. **QR con el valor:** si se puede leer el texto del QR que subes, pagoradar genera uno que ya trae el valor, sin

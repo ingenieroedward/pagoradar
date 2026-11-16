@@ -110,6 +110,26 @@ test("each open charge of an account gets its own amount", async () => {
   assert.equal((await pr.charges.list({ reference: "order-2" })).charges[0].id, c2.id);
 });
 
+test("the charge brings its QR's text, with the amount when the account has it on", async () => {
+  const { crc16, parseTlv } = await import("../src/emvqr.js");
+  const tlv = (id, v) => `${id}${String(v.length).padStart(2, "0")}${v}`;
+  const body = tlv("00", "01") + tlv("01", "11") + tlv("26", tlv("01", "@segunda")) + tlv("53", "170") + tlv("58", "CO") + tlv("59", "SEGUNDA");
+  const bankQr = `${body}6304${crc16(`${body}6304`)}`;
+  assert.equal((await pr.charges.create({ account: account2.id, amount: 3000 })).qr, null, "no QR uploaded");
+
+  store.accountQr.set(account2.id, { image: "data:image/png;base64,AAAA", payload: bankQr, amountFormat: "keep" });
+  const c = await pr.charges.create({ account: account2.id, amount: 3000, reference: "qr-1" });
+  assert.equal(c.qr.includesAmount, true);
+  assert.equal(parseTlv(c.qr.text).find((t) => t.id === "54").value, String(c.amount));
+  assert.equal((await pr.charges.get(c.id)).qr.text, c.qr.text);
+  assert.equal((await pr.charges.create({ account: account2.id, amount: 3000, reference: "qr-1" })).qr.text, c.qr.text, "a retry too");
+
+  store.accountQr.set(account2.id, { amountFormat: null });
+  assert.deepEqual((await pr.charges.get(c.id)).qr, { text: bankQr, includesAmount: false }, "switched off: the bank's own");
+  assert.equal((await pr.charges.cancel(c.id)).qr, null, "nothing to pay any more");
+  store.accountQr.remove(account2.id);
+});
+
 test("checkout page: what to pay, how, and its status", async () => {
   const res = await fetch(`${base}/c/${c1.id}`);
   assert.equal(res.status, 200);

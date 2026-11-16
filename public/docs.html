@@ -263,6 +263,7 @@ Content-Type: application/json</code></pre>
   "account": { "id": "acc_k3m9x2p7q4wz", "name": "Tienda de Ana", "tenantRef": "org_42" },
   "payTo": { "key": "@tiendaana", "holder": "Ana Pérez", "banks": ["nequi_negocios"] },
   "checkoutUrl": "{{BASE}}/c/chg_q8m2x7k4p9t3w6z5n2b8c4v7",
+  "qr": { "text": "00020101021126…5405250015802CO…6304A1B2", "includesAmount": true },
   "returnUrl": "https://tu-app.com/gracias",
   "paymentId": null,
   "match": null,
@@ -452,7 +453,7 @@ try {
   <h2>Página de pago</h2>
   <p>Cada cobro tiene una página pública en <code>checkoutUrl</code> (<code>{{BASE}}/c/chg_…</code>): el valor exacto con botón Copiar, la llave Bre-B y el titular de la cuenta (<code>payKey</code>, <code>payHolder</code>), una cuenta regresiva y el estado, que se actualiza solo. Al pagarse muestra "¡Pago recibido!" y vuelve a <code>returnUrl</code>. No muestra <code>reference</code> ni <code>metadata</code>.</p>
   <p><b>QR:</b> si la cuenta tiene subido el QR de su banco (en el panel, Configuración de la cuenta → QR de Bre-B), la página lo muestra. Si se pudo leer su contenido, el QR ya trae el valor del cobro; si no, es la imagen del banco y el cliente escribe el valor. Debajo siempre dice a qué llave enviar si no puede escanearlo.</p>
-  <p><b>La API no devuelve el QR</b>, ni la imagen ni su contenido: el cobro trae <code>checkoutUrl</code> y los datos para pagar con llave (<code>amount</code> y <code>payTo</code>). Si quieres mostrar un QR en tu app, genera uno con <code>checkoutUrl</code>: el cliente lo escanea con la cámara y abre la página de pago, con su QR para la app del banco.</p>
+  <p><b>El QR en tu app:</b> las respuestas de la API traen <code>qr</code>, el texto del QR de Bre-B de ese cobro, para que lo dibujes con cualquier librería de QR. <code>includesAmount: true</code> significa que ya trae el valor y la app del banco lo muestra; con <code>false</code> es el QR del banco tal cual y el cliente escribe <code>amount</code>. Es <code>null</code> si el cobro ya no está pendiente o si la cuenta no tiene un QR cuyo contenido se pudo leer. No viene en los eventos del webhook, y la imagen subida no se devuelve. Muestra también la llave (<code>payTo.key</code>), porque no todas las apps de banco leen el QR con el valor.</p>
   <p>¿Prefieres tu propia pantalla? Usa <code>amount</code>, <code>adjustment</code>, <code>payTo</code> y <code>expiresAt</code> del cobro, y consulta <code>GET /v1/charges/{id}</code> o espera el webhook.</p>
   <div class="note warn"><b>No confíes en la redirección.</b> Que el cliente vuelva a tu <code>returnUrl</code> no prueba que pagó: marca el pedido como pagado solo con <code>charge.paid</code> o consultando el cobro desde tu servidor.</div>
 </section>

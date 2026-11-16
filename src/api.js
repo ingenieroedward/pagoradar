@@ -2,6 +2,7 @@ import { BANK_IDS, gmailFilterFor } from "./parsers/index.js";
 import { rateLimiter, readBody, sendJson } from "./http.js";
 import { chargeDTO, createCharge, expireCharges, payManually } from "./charges.js";
 import { deliverDue, makeEvent, queueEvent } from "./webhooks.js";
+import { qrForCharge } from "./emvqr.js";
 
 const MAX_ACCOUNTS_PER_APP = 5000;
 const createLimit = rateLimiter(60, 3600_000);
@@ -208,7 +209,9 @@ export async function handleApi(req, res, url, ctx) {
 
   if (path === "/v1/charges" || path.startsWith("/v1/charges/")) {
     if (expireCharges(store, { publicUrl })) void deliverDue(store, { log }).catch(() => {});
-    const dto = (c) => chargeDTO(c, store.accounts.get(c.accountId), publicUrl);
+    // The QR's text rides only in API responses (not in events), and only while the charge can still be paid.
+    const withQr = (c, dto) => ({ ...dto, qr: c.status === "pending" ? qrForCharge(store.accountQr.get(c.accountId), c.amount) : null });
+    const dto = (c) => withQr(c, chargeDTO(c, store.accounts.get(c.accountId), publicUrl));
 
     if (path === "/v1/charges" && req.method === "POST") {
       if (!chargeLimit(app.id)) return done(429, { error: "Demasiados cobros creados en la última hora" });
@@ -217,7 +220,7 @@ export async function handleApi(req, res, url, ctx) {
       const r = createCharge(store, app, body.value);
       if (r.error) return done(r.status, { error: r.error });
       if (r.created) audit("Creó un cobro", r.charge.id, `$${r.charge.amount.toLocaleString("es-CO")} · ${r.account.name}${r.charge.reference ? ` · ref. ${r.charge.reference}` : ""}`);
-      return done(r.created ? 201 : 200, chargeDTO(r.charge, r.account, publicUrl));
+      return done(r.created ? 201 : 200, withQr(r.charge, chargeDTO(r.charge, r.account, publicUrl)));
     }
     if (path === "/v1/charges" && req.method === "GET") {
       const q = url.searchParams;
